@@ -44,7 +44,15 @@ def run_ssh_command(app, result_text, server, command):
         update_ui("cmd", f"\n[{timestamp}] {name} >> {command}\n")
 
         client.connect(hostname=host, port=port, username=username, key_filename=key_path)
-        stdin, stdout, stderr = client.exec_command(command)
+
+        # Wrap in login shell to load user profile (PATH, etc.)
+        if server.get("login_shell", True):
+            escaped = command.replace("'", "'\\''")
+            exec_cmd = f"bash -l -c '{escaped}'"
+        else:
+            exec_cmd = command
+
+        stdin, stdout, stderr = client.exec_command(exec_cmd)
         output = stdout.read().decode()
         error = stderr.read().decode()
         client.close()
@@ -92,6 +100,12 @@ class ServerDialog(tk.Toplevel):
             self.entries[key] = entry
 
         row = len(fields)
+
+        # --- Login shell checkbox ---
+        self.login_shell_var = tk.BooleanVar(value=server.get("login_shell", True) if server else True)
+        tk.Checkbutton(self, text="Login shell (load profile — uncheck for Windows)",
+                       variable=self.login_shell_var).grid(row=row, column=0, columnspan=3, padx=5, pady=3, sticky="w")
+        row += 1
 
         # --- Commands section ---
         tk.Label(self, text="Quick Commands:", font=("Arial", 10, "bold")).grid(
@@ -227,6 +241,7 @@ class ServerDialog(tk.Toplevel):
             messagebox.showerror("Missing Fields", "Name, Host, Username, and Key Path are required.", parent=self)
             return
 
+        data["login_shell"] = self.login_shell_var.get()
         data["commands"] = self.commands
 
         if self.callback:
