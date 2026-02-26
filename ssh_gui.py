@@ -140,7 +140,7 @@ class ServerDialog(tk.Toplevel):
         self.cmd_label_entry.pack(side=tk.LEFT, padx=(2, 5))
 
         tk.Label(entry_frame, text="Command:").pack(side=tk.LEFT)
-        self.cmd_command_entry = tk.Entry(entry_frame, width=25)
+        self.cmd_command_entry = tk.Entry(entry_frame, width=50)
         self.cmd_command_entry.pack(side=tk.LEFT, padx=(2, 5), fill=tk.X, expand=True)
 
         row += 1
@@ -261,6 +261,39 @@ class SSHManagerApp:
         self._build_ui()
         self._refresh_server_combo()
 
+    def _create_output_widget(self, parent):
+        """Create a new ScrolledText output widget with standard tags."""
+        widget = scrolledtext.ScrolledText(parent, height=20, bg="#1e1e1e", fg="#d4d4d4",
+                                           insertbackground="white", font=("Consolas", 10))
+        widget.tag_config("output", foreground="#4ec9b0")
+        widget.tag_config("error", foreground="#f44747")
+        widget.tag_config("cmd", foreground="#569cd6")
+        return widget
+
+    def _get_output_widget(self, server_name):
+        """Get or create the output widget for a given server."""
+        if server_name not in self.server_outputs:
+            widget = self._create_output_widget(self.out_frame)
+            self.server_outputs[server_name] = widget
+        return self.server_outputs[server_name]
+
+    def _switch_output(self):
+        """Show the output widget for the currently selected server."""
+        idx = self.server_combo.current()
+        if idx < 0:
+            return
+
+        server_name = self.servers[idx]["name"]
+        target_widget = self._get_output_widget(server_name)
+
+        # Hide current, show target
+        if self.current_output is not target_widget:
+            if self.current_output is not None:
+                self.current_output.pack_forget()
+            target_widget.pack(fill=tk.BOTH, expand=True)
+            self.current_output = target_widget
+            self.result_text = target_widget
+
     def _build_ui(self):
         # --- Top bar: server selector + management buttons ---
         top_frame = tk.Frame(self.root)
@@ -269,7 +302,7 @@ class SSHManagerApp:
         tk.Label(top_frame, text="Server:").pack(side=tk.LEFT, padx=(0, 5))
         self.server_combo = ttk.Combobox(top_frame, state="readonly", width=30)
         self.server_combo.pack(side=tk.LEFT, padx=(0, 10))
-        self.server_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_buttons())
+        self.server_combo.bind("<<ComboboxSelected>>", lambda e: self._on_server_selected())
 
         tk.Button(top_frame, text="Add", command=self._add_server, width=6).pack(side=tk.LEFT, padx=2)
         tk.Button(top_frame, text="Edit", command=self._edit_server, width=6).pack(side=tk.LEFT, padx=2)
@@ -291,16 +324,19 @@ class SSHManagerApp:
         tk.Button(cmd_frame, text="Send", command=self._send_command, width=8).pack(side=tk.LEFT)
 
         # --- Output panel ---
-        out_frame = tk.Frame(self.root)
-        out_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 5))
+        self.out_frame = tk.Frame(self.root)
+        self.out_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 5))
 
-        tk.Label(out_frame, text="Output", font=("Arial", 12)).pack(anchor="w")
-        self.result_text = scrolledtext.ScrolledText(out_frame, height=20, bg="#1e1e1e", fg="#d4d4d4",
-                                                     insertbackground="white", font=("Consolas", 10))
-        self.result_text.pack(fill=tk.BOTH, expand=True)
-        self.result_text.tag_config("output", foreground="#4ec9b0")
-        self.result_text.tag_config("error", foreground="#f44747")
-        self.result_text.tag_config("cmd", foreground="#569cd6")
+        tk.Label(self.out_frame, text="Output", font=("Arial", 12)).pack(anchor="w")
+
+        # Per-server output widgets
+        self.server_outputs = {}  # server_name -> ScrolledText
+        self.current_output = None
+        self.result_text = None
+
+    def _on_server_selected(self):
+        self._refresh_buttons()
+        self._switch_output()
 
     # --- Quick command buttons ---
     def _refresh_buttons(self):
@@ -329,9 +365,10 @@ class SSHManagerApp:
         if idx < 0:
             return
         server = self.servers[idx]
+        output_widget = self._get_output_widget(server["name"])
         thread = threading.Thread(
             target=run_ssh_command,
-            args=(self.root, self.result_text, server, command),
+            args=(self.root, output_widget, server, command),
         )
         thread.start()
 
@@ -342,6 +379,7 @@ class SSHManagerApp:
         if names:
             self.server_combo.current(0)
         self._refresh_buttons()
+        self._switch_output()
 
     def _add_server(self):
         ServerDialog(self.root, title="Add Server", callback=self._on_server_added)
@@ -363,11 +401,17 @@ class SSHManagerApp:
                      callback=lambda data: self._on_server_edited(idx, data))
 
     def _on_server_edited(self, idx, data):
+        old_name = self.servers[idx]["name"]
+        new_name = data["name"]
+        # Migrate output widget if server was renamed
+        if old_name != new_name and old_name in self.server_outputs:
+            self.server_outputs[new_name] = self.server_outputs.pop(old_name)
         self.servers[idx] = data
         save_servers(self.servers)
         self._refresh_server_combo()
         self.server_combo.current(idx)
         self._refresh_buttons()
+        self._switch_output()
 
     def _delete_server(self):
         idx = self.server_combo.current()
@@ -376,6 +420,14 @@ class SSHManagerApp:
             return
         name = self.servers[idx]["name"]
         if messagebox.askyesno("Confirm Delete", f"Delete server '{name}'?"):
+            # Clean up the output widget for this server
+            if name in self.server_outputs:
+                widget = self.server_outputs.pop(name)
+                if self.current_output is widget:
+                    widget.pack_forget()
+                    self.current_output = None
+                    self.result_text = None
+                widget.destroy()
             self.servers.pop(idx)
             save_servers(self.servers)
             self._refresh_server_combo()
@@ -391,9 +443,10 @@ class SSHManagerApp:
             return
         server = self.servers[idx]
         self.cmd_entry.delete(0, tk.END)
+        output_widget = self._get_output_widget(server["name"])
         thread = threading.Thread(
             target=run_ssh_command,
-            args=(self.root, self.result_text, server, command),
+            args=(self.root, output_widget, server, command),
         )
         thread.start()
 
