@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox
+from tkinter import ttk, scrolledtext, messagebox, simpledialog, colorchooser
 import threading
 import paramiko
 import json
@@ -146,17 +146,10 @@ class ServerDialog(tk.Toplevel):
         if server and "commands" in server:
             for cmd in server["commands"]:
                 self.commands.append(cmd)
-                self.cmd_listbox.insert(tk.END, f"{cmd['label']}  |  {cmd['script']}")
-
-        row += 1
-
-        # Label entry field
-        entry_frame = tk.Frame(self)
-        entry_frame.grid(row=row, column=0, columnspan=3, padx=5, pady=3, sticky="ew")
-
-        tk.Label(entry_frame, text="Label:").pack(side=tk.LEFT)
-        self.cmd_label_entry = tk.Entry(entry_frame, width=40)
-        self.cmd_label_entry.pack(side=tk.LEFT, padx=(2, 5), fill=tk.X, expand=True)
+                color = cmd.get("color", "")
+                self.cmd_listbox.insert(tk.END, f"{cmd['label']}  |  {cmd['script']}  {color}")
+                if color:
+                    self.cmd_listbox.itemconfig(self.cmd_listbox.size() - 1, fg=color)
 
         row += 1
 
@@ -165,6 +158,8 @@ class ServerDialog(tk.Toplevel):
 
         tk.Button(cmd_btn_frame, text="Add Cmd", command=self._add_cmd, width=8).pack(side=tk.LEFT, padx=2)
         tk.Button(cmd_btn_frame, text="Edit Cmd", command=self._edit_cmd, width=8).pack(side=tk.LEFT, padx=2)
+        tk.Button(cmd_btn_frame, text="Rename", command=self._rename_cmd, width=8).pack(side=tk.LEFT, padx=2)
+        tk.Button(cmd_btn_frame, text="Color", command=self._recolor_cmd, width=8).pack(side=tk.LEFT, padx=2)
         tk.Button(cmd_btn_frame, text="Remove", command=self._remove_cmd, width=8).pack(side=tk.LEFT, padx=2)
         tk.Button(cmd_btn_frame, text="Move Up", command=self._move_cmd_up, width=8).pack(side=tk.LEFT, padx=2)
         tk.Button(cmd_btn_frame, text="Move Down", command=self._move_cmd_down, width=8).pack(side=tk.LEFT, padx=2)
@@ -179,15 +174,20 @@ class ServerDialog(tk.Toplevel):
         tk.Button(btn_frame, text="Cancel", command=self.destroy, width=10).pack(side=tk.LEFT, padx=5)
 
     def _add_cmd(self):
-        label = self.cmd_label_entry.get().strip()
-        if not label:
-            messagebox.showerror("Missing", "Label is required.", parent=self)
-            return
-
         server_name = self.entries["name"].get().strip()
         if not server_name:
             messagebox.showinfo("No Name", "Enter a server name first.", parent=self)
             return
+
+        label = simpledialog.askstring("Add Command", "Label:", parent=self)
+        if not label or not label.strip():
+            return
+        label = label.strip()
+
+        color = colorchooser.askcolor(title="Button Color", parent=self)
+        if not color[1]:
+            return
+        hex_color = color[1]
 
         script = label_to_script_name(label)
 
@@ -199,10 +199,8 @@ class ServerDialog(tk.Toplevel):
             with open(script_path, "w") as f:
                 f.write("# Add your commands here\n")
 
-        self.commands.append({"label": label, "script": script})
-        self.cmd_listbox.insert(tk.END, f"{label}  |  {script}")
-
-        self.cmd_label_entry.delete(0, tk.END)
+        self.commands.append({"label": label, "script": script, "color": hex_color})
+        self.cmd_listbox.insert(tk.END, f"{label}  |  {script}  |  {hex_color}")
 
     def _edit_cmd(self):
         sel = self.cmd_listbox.curselection()
@@ -221,6 +219,31 @@ class ServerDialog(tk.Toplevel):
                 f.write("# Add your commands here\n")
         import subprocess
         subprocess.Popen(["xdg-open", script_path])
+
+    def _rename_cmd(self):
+        sel = self.cmd_listbox.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        cmd = self.commands[idx]
+        new_label = tk.simpledialog.askstring("Rename Command", "New label:", initialvalue=cmd["label"], parent=self)
+        if new_label and new_label.strip():
+            cmd["label"] = new_label.strip()
+            self._refresh_cmd_listbox()
+            self.cmd_listbox.selection_set(idx)
+
+    def _recolor_cmd(self):
+        sel = self.cmd_listbox.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        cmd = self.commands[idx]
+        current = cmd.get("color")
+        color = colorchooser.askcolor(title="Button Color", initialcolor=current, parent=self)
+        if color[1]:
+            cmd["color"] = color[1]
+            self._refresh_cmd_listbox()
+            self.cmd_listbox.selection_set(idx)
 
     def _open_scripts_folder(self):
         server_name = self.entries["name"].get().strip()
@@ -261,7 +284,10 @@ class ServerDialog(tk.Toplevel):
     def _refresh_cmd_listbox(self):
         self.cmd_listbox.delete(0, tk.END)
         for cmd in self.commands:
-            self.cmd_listbox.insert(tk.END, f"{cmd['label']}  |  {cmd['script']}")
+            color = cmd.get("color", "")
+            self.cmd_listbox.insert(tk.END, f"{cmd['label']}  |  {cmd['script']}  {color}")
+            if color:
+                self.cmd_listbox.itemconfig(self.cmd_listbox.size() - 1, fg=color)
 
     def _save(self):
         data = {}
@@ -398,8 +424,11 @@ class SSHManagerApp:
             return
 
         for cmd in commands:
+            color = cmd.get("color")
             btn = tk.Button(self.btn_frame, text=cmd["label"],
                             command=lambda c=cmd["script"]: self._run_quick_command(c))
+            if color:
+                btn.config(bg=color, activebackground=color)
             btn.pack(side=tk.LEFT, padx=2, pady=2)
 
     def _run_quick_command(self, script_filename):
