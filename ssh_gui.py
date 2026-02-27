@@ -146,10 +146,7 @@ class ServerDialog(tk.Toplevel):
         if server and "commands" in server:
             for cmd in server["commands"]:
                 self.commands.append(cmd)
-                color = cmd.get("color", "")
-                self.cmd_listbox.insert(tk.END, f"{cmd['label']}  |  {cmd['script']}  {color}")
-                if color:
-                    self.cmd_listbox.itemconfig(self.cmd_listbox.size() - 1, fg=color)
+                self._insert_cmd_listbox_item(cmd)
 
         row += 1
 
@@ -160,6 +157,7 @@ class ServerDialog(tk.Toplevel):
         tk.Button(cmd_btn_frame, text="Edit Cmd", command=self._edit_cmd, width=8).pack(side=tk.LEFT, padx=2)
         tk.Button(cmd_btn_frame, text="Rename", command=self._rename_cmd, width=8).pack(side=tk.LEFT, padx=2)
         tk.Button(cmd_btn_frame, text="Color", command=self._recolor_cmd, width=8).pack(side=tk.LEFT, padx=2)
+        tk.Button(cmd_btn_frame, text="Project", command=self._set_cmd_project, width=8).pack(side=tk.LEFT, padx=2)
         tk.Button(cmd_btn_frame, text="Remove", command=self._remove_cmd, width=8).pack(side=tk.LEFT, padx=2)
         tk.Button(cmd_btn_frame, text="Move Up", command=self._move_cmd_up, width=8).pack(side=tk.LEFT, padx=2)
         tk.Button(cmd_btn_frame, text="Move Down", command=self._move_cmd_down, width=8).pack(side=tk.LEFT, padx=2)
@@ -184,6 +182,11 @@ class ServerDialog(tk.Toplevel):
             return
         label = label.strip()
 
+        project = simpledialog.askstring("Add Command", "Project:", parent=self)
+        if project is None:
+            return
+        project = project.strip()
+
         color = colorchooser.askcolor(title="Button Color", parent=self)
         if not color[1]:
             return
@@ -199,8 +202,11 @@ class ServerDialog(tk.Toplevel):
             with open(script_path, "w") as f:
                 f.write("# Add your commands here\n")
 
-        self.commands.append({"label": label, "script": script, "color": hex_color})
-        self.cmd_listbox.insert(tk.END, f"{label}  |  {script}  |  {hex_color}")
+        cmd_data = {"label": label, "script": script, "color": hex_color}
+        if project:
+            cmd_data["project"] = project
+        self.commands.append(cmd_data)
+        self._refresh_cmd_listbox()
 
     def _edit_cmd(self):
         sel = self.cmd_listbox.curselection()
@@ -245,6 +251,24 @@ class ServerDialog(tk.Toplevel):
             self._refresh_cmd_listbox()
             self.cmd_listbox.selection_set(idx)
 
+    def _set_cmd_project(self):
+        sel = self.cmd_listbox.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        cmd = self.commands[idx]
+        current = cmd.get("project", "")
+        project = simpledialog.askstring("Set Project", "Project:", initialvalue=current, parent=self)
+        if project is None:
+            return
+        project = project.strip()
+        if project:
+            cmd["project"] = project
+        else:
+            cmd.pop("project", None)
+        self._refresh_cmd_listbox()
+        self.cmd_listbox.selection_set(idx)
+
     def _open_scripts_folder(self):
         server_name = self.entries["name"].get().strip()
         if not server_name:
@@ -281,13 +305,18 @@ class ServerDialog(tk.Toplevel):
         self._refresh_cmd_listbox()
         self.cmd_listbox.selection_set(idx + 1)
 
+    def _insert_cmd_listbox_item(self, cmd):
+        project = cmd.get("project", "")
+        color = cmd.get("color", "")
+        prefix = f"[{project}] " if project else ""
+        self.cmd_listbox.insert(tk.END, f"{prefix}{cmd['label']}  |  {cmd['script']}  {color}")
+        if color:
+            self.cmd_listbox.itemconfig(self.cmd_listbox.size() - 1, fg=color)
+
     def _refresh_cmd_listbox(self):
         self.cmd_listbox.delete(0, tk.END)
         for cmd in self.commands:
-            color = cmd.get("color", "")
-            self.cmd_listbox.insert(tk.END, f"{cmd['label']}  |  {cmd['script']}  {color}")
-            if color:
-                self.cmd_listbox.itemconfig(self.cmd_listbox.size() - 1, fg=color)
+            self._insert_cmd_listbox_item(cmd)
 
     def _save(self):
         data = {}
@@ -423,13 +452,29 @@ class SSHManagerApp:
                      fg="gray").pack(anchor="w")
             return
 
+        # Group commands by project
+        from collections import OrderedDict
+        groups = OrderedDict()
         for cmd in commands:
-            color = cmd.get("color")
-            btn = tk.Button(self.btn_frame, text=cmd["label"],
-                            command=lambda c=cmd["script"]: self._run_quick_command(c))
-            if color:
-                btn.config(bg=color, activebackground=color)
-            btn.pack(side=tk.LEFT, padx=2, pady=2)
+            project = cmd.get("project", "")
+            groups.setdefault(project, []).append(cmd)
+
+        cols = 5
+        for project, cmds in groups.items():
+            if project:
+                tk.Label(self.btn_frame, text=project, font=("Arial", 9, "bold")).pack(anchor="w", padx=2, pady=(4, 0))
+            grid = tk.Frame(self.btn_frame)
+            grid.pack(fill=tk.X, padx=2, pady=(0, 2))
+            for i, cmd in enumerate(cmds):
+                color = cmd.get("color")
+                btn = tk.Button(grid, text=cmd["label"],
+                                command=lambda c=cmd["script"]: self._run_quick_command(c))
+                if color:
+                    btn.config(bg=color, activebackground=color)
+                r, c = divmod(i, cols)
+                btn.grid(row=r, column=c, padx=2, pady=2, sticky="nsew")
+            for c in range(cols):
+                grid.columnconfigure(c, weight=1)
 
     def _run_quick_command(self, script_filename):
         idx = self.server_combo.current()

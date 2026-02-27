@@ -4,3 +4,4 @@ history.json
 servers.json
 servers_backup.json
 scripts/**
+backup.tar.gz
