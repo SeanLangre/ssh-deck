@@ -3,3 +3,4 @@ __pycache__/**
 history.json
 servers.json
 servers_backup.json
+scripts/**

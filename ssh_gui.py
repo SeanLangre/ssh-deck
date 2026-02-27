@@ -10,6 +10,7 @@ from datetime import datetime
 # ---------- Config ----------
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SERVERS_FILE = os.path.join(SCRIPT_DIR, "servers.json")
+SCRIPTS_DIR = os.path.join(SCRIPT_DIR, "scripts")
 
 
 # ---------- Server Persistence ----------
@@ -23,6 +24,24 @@ def load_servers():
 def save_servers(servers):
     with open(SERVERS_FILE, "w") as f:
         json.dump(servers, f, indent=2)
+
+
+# ---------- Script Helpers ----------
+def get_server_scripts_dir(server_name):
+    return os.path.join(SCRIPTS_DIR, server_name)
+
+
+def load_script_content(server_name, script_filename):
+    path = os.path.join(get_server_scripts_dir(server_name), script_filename)
+    with open(path, "r") as f:
+        return f.read().strip()
+
+
+def label_to_script_name(label):
+    import re
+    name = label.lower().strip()
+    name = re.sub(r'[^a-z0-9]+', '-', name).strip('-')
+    return name + ".sh"
 
 
 # ---------- SSH Function ----------
@@ -108,7 +127,7 @@ class ServerDialog(tk.Toplevel):
         row += 1
 
         # --- Commands section ---
-        tk.Label(self, text="Quick Commands:", font=("Arial", 10, "bold")).grid(
+        tk.Label(self, text="Quick Commands (scripts):", font=("Arial", 10, "bold")).grid(
             row=row, column=0, columnspan=3, padx=5, pady=(10, 3), sticky="w")
         row += 1
 
@@ -127,21 +146,17 @@ class ServerDialog(tk.Toplevel):
         if server and "commands" in server:
             for cmd in server["commands"]:
                 self.commands.append(cmd)
-                self.cmd_listbox.insert(tk.END, f"{cmd['label']}  |  {cmd['command']}")
+                self.cmd_listbox.insert(tk.END, f"{cmd['label']}  |  {cmd['script']}")
 
         row += 1
 
-        # Label + command entry fields
+        # Label entry field
         entry_frame = tk.Frame(self)
         entry_frame.grid(row=row, column=0, columnspan=3, padx=5, pady=3, sticky="ew")
 
         tk.Label(entry_frame, text="Label:").pack(side=tk.LEFT)
-        self.cmd_label_entry = tk.Entry(entry_frame, width=15)
-        self.cmd_label_entry.pack(side=tk.LEFT, padx=(2, 5))
-
-        tk.Label(entry_frame, text="Command:").pack(side=tk.LEFT)
-        self.cmd_command_entry = tk.Entry(entry_frame, width=50)
-        self.cmd_command_entry.pack(side=tk.LEFT, padx=(2, 5), fill=tk.X, expand=True)
+        self.cmd_label_entry = tk.Entry(entry_frame, width=40)
+        self.cmd_label_entry.pack(side=tk.LEFT, padx=(2, 5), fill=tk.X, expand=True)
 
         row += 1
 
@@ -153,6 +168,7 @@ class ServerDialog(tk.Toplevel):
         tk.Button(cmd_btn_frame, text="Remove", command=self._remove_cmd, width=8).pack(side=tk.LEFT, padx=2)
         tk.Button(cmd_btn_frame, text="Move Up", command=self._move_cmd_up, width=8).pack(side=tk.LEFT, padx=2)
         tk.Button(cmd_btn_frame, text="Move Down", command=self._move_cmd_down, width=8).pack(side=tk.LEFT, padx=2)
+        tk.Button(cmd_btn_frame, text="Open Folder", command=self._open_scripts_folder, width=10).pack(side=tk.LEFT, padx=2)
 
         row += 1
 
@@ -164,23 +180,29 @@ class ServerDialog(tk.Toplevel):
 
     def _add_cmd(self):
         label = self.cmd_label_entry.get().strip()
-        command = self.cmd_command_entry.get().strip()
-        if not label or not command:
-            messagebox.showerror("Missing", "Both Label and Command are required.", parent=self)
+        if not label:
+            messagebox.showerror("Missing", "Label is required.", parent=self)
             return
 
-        if self._editing_idx is not None:
-            # Save edit to existing command
-            idx = self._editing_idx
-            self.commands[idx] = {"label": label, "command": command}
-            self._editing_idx = None
-            self._refresh_cmd_listbox()
-        else:
-            self.commands.append({"label": label, "command": command})
-            self.cmd_listbox.insert(tk.END, f"{label}  |  {command}")
+        server_name = self.entries["name"].get().strip()
+        if not server_name:
+            messagebox.showinfo("No Name", "Enter a server name first.", parent=self)
+            return
+
+        script = label_to_script_name(label)
+
+        # Create the script file if it doesn't exist
+        scripts_dir = get_server_scripts_dir(server_name)
+        os.makedirs(scripts_dir, exist_ok=True)
+        script_path = os.path.join(scripts_dir, script)
+        if not os.path.exists(script_path):
+            with open(script_path, "w") as f:
+                f.write("# Add your commands here\n")
+
+        self.commands.append({"label": label, "script": script})
+        self.cmd_listbox.insert(tk.END, f"{label}  |  {script}")
 
         self.cmd_label_entry.delete(0, tk.END)
-        self.cmd_command_entry.delete(0, tk.END)
 
     def _edit_cmd(self):
         sel = self.cmd_listbox.curselection()
@@ -188,11 +210,27 @@ class ServerDialog(tk.Toplevel):
             return
         idx = sel[0]
         cmd = self.commands[idx]
-        self._editing_idx = idx
-        self.cmd_label_entry.delete(0, tk.END)
-        self.cmd_label_entry.insert(0, cmd["label"])
-        self.cmd_command_entry.delete(0, tk.END)
-        self.cmd_command_entry.insert(0, cmd["command"])
+        server_name = self.entries["name"].get().strip()
+        if not server_name:
+            messagebox.showinfo("No Name", "Enter a server name first.", parent=self)
+            return
+        script_path = os.path.join(get_server_scripts_dir(server_name), cmd["script"])
+        if not os.path.exists(script_path):
+            os.makedirs(os.path.dirname(script_path), exist_ok=True)
+            with open(script_path, "w") as f:
+                f.write("# Add your commands here\n")
+        import subprocess
+        subprocess.Popen(["xdg-open", script_path])
+
+    def _open_scripts_folder(self):
+        server_name = self.entries["name"].get().strip()
+        if not server_name:
+            messagebox.showinfo("No Name", "Enter a server name first.", parent=self)
+            return
+        scripts_dir = get_server_scripts_dir(server_name)
+        os.makedirs(scripts_dir, exist_ok=True)
+        import subprocess
+        subprocess.Popen(["xdg-open", scripts_dir])
 
     def _remove_cmd(self):
         sel = self.cmd_listbox.curselection()
@@ -223,7 +261,7 @@ class ServerDialog(tk.Toplevel):
     def _refresh_cmd_listbox(self):
         self.cmd_listbox.delete(0, tk.END)
         for cmd in self.commands:
-            self.cmd_listbox.insert(tk.END, f"{cmd['label']}  |  {cmd['command']}")
+            self.cmd_listbox.insert(tk.END, f"{cmd['label']}  |  {cmd['script']}")
 
     def _save(self):
         data = {}
@@ -243,6 +281,10 @@ class ServerDialog(tk.Toplevel):
 
         data["login_shell"] = self.login_shell_var.get()
         data["commands"] = self.commands
+
+        # Ensure scripts directory exists for this server
+        if data["name"]:
+            os.makedirs(get_server_scripts_dir(data["name"]), exist_ok=True)
 
         if self.callback:
             self.callback(data)
@@ -357,14 +399,20 @@ class SSHManagerApp:
 
         for cmd in commands:
             btn = tk.Button(self.btn_frame, text=cmd["label"],
-                            command=lambda c=cmd["command"]: self._run_quick_command(c))
+                            command=lambda c=cmd["script"]: self._run_quick_command(c))
             btn.pack(side=tk.LEFT, padx=2, pady=2)
 
-    def _run_quick_command(self, command):
+    def _run_quick_command(self, script_filename):
         idx = self.server_combo.current()
         if idx < 0:
             return
         server = self.servers[idx]
+        try:
+            command = load_script_content(server["name"], script_filename)
+        except FileNotFoundError:
+            messagebox.showerror("Script Not Found",
+                                 f"Script file not found:\nscripts/{server['name']}/{script_filename}")
+            return
         output_widget = self._get_output_widget(server["name"])
         thread = threading.Thread(
             target=run_ssh_command,
@@ -406,6 +454,12 @@ class SSHManagerApp:
         # Migrate output widget if server was renamed
         if old_name != new_name and old_name in self.server_outputs:
             self.server_outputs[new_name] = self.server_outputs.pop(old_name)
+        # Rename scripts folder if server was renamed
+        if old_name != new_name:
+            old_dir = get_server_scripts_dir(old_name)
+            new_dir = get_server_scripts_dir(new_name)
+            if os.path.isdir(old_dir):
+                os.rename(old_dir, new_dir)
         self.servers[idx] = data
         save_servers(self.servers)
         self._refresh_server_combo()
