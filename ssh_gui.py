@@ -7,6 +7,15 @@ import json
 import os
 from datetime import datetime
 import time
+import re
+
+_ANSI_RE = re.compile(r'\x1b[\[\(][0-9;?]*[a-zA-Z]|\x1b[=>]|\x1b\][^\x07]*\x07|\r')
+_BLANK_LINES_RE = re.compile(r'\n{3,}')
+
+def strip_ansi(text):
+    text = _ANSI_RE.sub('', text)
+    text = _BLANK_LINES_RE.sub('\n\n', text)
+    return text
 
 # ---------- Config ----------
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -45,6 +54,9 @@ def label_to_script_name(label):
     return name + ".sh"
 
 
+POPOUT_LINE_THRESHOLD = 20
+
+
 # ---------- SSH Function ----------
 def run_ssh_command(app, result_text, server, command):
     host = server["host"]
@@ -55,8 +67,45 @@ def run_ssh_command(app, result_text, server, command):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     start_time = datetime.now()
 
+    # Mutable state for auto-popout
+    state = {"widget": result_text, "lines": 0, "popped": False, "win": None}
+    popout_ready = threading.Event()
+
+    def _create_popout():
+        """Create popout window on main thread."""
+        win = tk.Toplevel(app)
+        win.title(f"{name} — {command[:60]}")
+        win.geometry("900x600")
+        w = scrolledtext.ScrolledText(win, height=20, bg="#1e1e1e", fg="#d4d4d4",
+                                      insertbackground="white", font=("Consolas", 10))
+        w.tag_config("output", foreground="#4ec9b0")
+        w.tag_config("error", foreground="#f44747")
+        w.tag_config("cmd", foreground="#569cd6")
+        w.pack(fill=tk.BOTH, expand=True)
+        # Copy existing content from main widget
+        content = result_text.get("1.0", tk.END)
+        if content.strip():
+            w.insert(tk.END, content, "output")
+            w.see(tk.END)
+        state["widget"] = w
+        state["win"] = win
+        # Leave a note in the main output
+        _insert_tagged(result_text, f"↗ Output moved to new window (>{POPOUT_LINE_THRESHOLD} lines)\n", "cmd")
+        popout_ready.set()
+
     def update_ui(tag, text):
-        app.after(0, lambda: _insert_tagged(result_text, text, tag))
+        text = strip_ansi(text)
+        if not text:
+            return
+        # Count non-empty output lines
+        if tag == "output":
+            state["lines"] += sum(1 for ln in text.splitlines() if ln.strip())
+            if not state["popped"] and state["lines"] > POPOUT_LINE_THRESHOLD:
+                state["popped"] = True
+                popout_ready.clear()
+                app.after(0, _create_popout)
+                popout_ready.wait(timeout=5)
+        app.after(0, lambda: _insert_tagged(state["widget"], text, tag))
 
     def elapsed():
         delta = datetime.now() - start_time
@@ -120,6 +169,14 @@ def run_ssh_command(app, result_text, server, command):
 
 
 def _insert_tagged(widget, text, tag):
+    # Suppress consecutive blank lines
+    if text.strip() == '':
+        try:
+            last = widget.get("end-3l linestart", "end-1c")
+            if last.strip() == '':
+                return
+        except Exception:
+            pass
     widget.insert(tk.END, text, tag)
     widget.see(tk.END)
 
