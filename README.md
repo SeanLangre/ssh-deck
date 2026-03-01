@@ -1,54 +1,78 @@
- Plan to implement                                                                    │
-│                                                                                      │
-│ SSH GUI Manager - Implementation Plan                                                │
-│                                                                                      │
-│ Context                                                                              │
-│                                                                                      │
-│ Current ssh_gui.py has hardcoded servers and commands. Goal: make it a flexible SSH  │
-│ management tool with dynamic server configs, custom commands, and full log history.  │
-│                                                                                      │
-│ Steps (implement one at a time per user request)                                     │
-│                                                                                      │
-│ Step 1: Server Config Persistence                                                    │
-│                                                                                      │
-│ - Add import json, os to ssh_gui.py                                                  │
-│ - Define SERVERS_FILE = "servers.json" (same directory as script)                    │
-│ - Add load_servers() — reads JSON file, returns list of server dicts. Returns [] if  │
-│ file missing.                                                                        │
-│ - Add save_servers(servers) — writes list to JSON file with indent                   │
-│ - Server dict format: {"name": "...", "host": "...", "port": 22, "username": "...",  │
-│ "key_path": "..."}                                                                   │
-│ - Replace hardcoded server1()/server2() functions with a servers list loaded from    │
-│ JSON                                                                                 │
-│ - File: /path/to/Python-Tkinter-Paramiko/ssh_gui.py                    │
-│                                                                                      │
-│ Step 2: Add/Edit/Remove Server Dialogs                                               │
-│                                                                                      │
-│ - Toplevel popup with Entry fields for name, host, port, username, key_path          │
-│ - Add button opens empty dialog, saves new server to list + JSON                     │
-│ - Edit button opens dialog pre-filled with selected server's data                    │
-│ - Delete button removes selected server with confirmation                            │
-│                                                                                      │
-│ Step 3: Server Selector Dropdown + Command Input                                     │
-│                                                                                      │
-│ - Replace hardcoded buttons with ttk.Combobox for server selection                   │
-│ - Add tk.Entry for typing commands + Send button (Enter key binding)                 │
-│ - Send dispatches the command to the selected server                                 │
-│                                                                                      │
-│ Step 4: Improved Output Panel                                                        │
-│                                                                                      │
-│ - Color-coded output using ScrolledText tags (green=output, red=error, blue=command) │
-│ - Use app.after() for thread-safe UI updates instead of direct widget inserts        │
-│                                                                                      │
-│ Step 5: Better Command History                                                       │
-│                                                                                      │
-│ - Timestamped entries showing server name + command + truncated response             │
-│ - Clear History button                                                               │
-│ - Optionally save history to file                                                    │
-│                                                                                      │
-│ Verification                                                                         │
-│                                                                                      │
-│ - python ssh_gui.py opens the UI                                                     │
-│ - Adding a server creates/updates servers.json                                       │
-│ - Selecting server + typing command + Send shows output and logs to history          │
-│ - Bad connections show errors without crashing   
+# SSH GUI Manager
+
+A lightweight desktop SSH management tool built with Python, Tkinter, and Paramiko. Manage multiple remote servers, run commands, and execute scripts — all from a single GUI.
+
+## Features
+
+- **Server Management** — Add, edit, and delete SSH server configurations stored in `servers.json`
+- **Quick Command Buttons** — Define per-server shortcut buttons with custom labels, colors, and project grouping
+- **Script-Based Commands** — Store reusable shell scripts per server in `scripts/<server-name>/`
+- **Live Streaming Output** — Real-time stdout/stderr with color-coded tags (blue = command, green = output, red = error)
+- **Auto Pop-Out Window** — Long output (>20 lines) automatically opens in a separate window to keep the main panel clean
+- **Per-Server Output Tabs** — Each server has its own output panel, switching when you select a different server
+- **Command Input** — Type and send ad-hoc commands to the selected server
+- **Command History** — Timestamped log of executed commands saved to `history.json`
+
+## Requirements
+
+- Python 3
+- [Paramiko](https://www.paramiko.org/)
+
+```
+pip install paramiko
+```
+
+Tkinter is included with most Python installations. On Debian/Ubuntu, install it with:
+
+```
+sudo apt install python3-tk
+```
+
+## Usage
+
+```
+python3 ssh_gui.py
+```
+
+Or use the included launch script:
+
+```
+./start.sh
+```
+
+## Project Structure
+
+```
+├── ssh_gui.py          # Main application
+├── servers.json        # Server configurations (auto-generated)
+├── history.json        # Command history (auto-generated)
+├── start.sh            # Launch script
+└── scripts/            # Per-server script directories
+    ├── server-a/
+    │   ├── git-pull.sh
+    │   └── build.sh
+    └── server-b/
+        └── deploy.sh
+```
+
+## Server Configuration
+
+Servers are managed through the GUI (Add/Edit/Delete buttons). Each server stores:
+
+| Field | Description |
+|-------|-------------|
+| Name | Display name and scripts folder name |
+| Host | Hostname or IP address |
+| Port | SSH port (default: 22) |
+| Username | SSH login user |
+| Key Path | Path to SSH private key |
+| Login Shell | Wrap commands in `bash -l` to load user profile |
+
+## Quick Commands
+
+Each server can have custom command buttons configured through the Edit dialog:
+
+- **Label** — Button text
+- **Script** — Shell script stored in `scripts/<server-name>/`
+- **Color** — Custom button color for visual grouping
+- **Project** — Optional project tag shown as a prefix
