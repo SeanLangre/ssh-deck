@@ -6,6 +6,7 @@ import paramiko
 import json
 import os
 from datetime import datetime
+import time
 
 # ---------- Config ----------
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -52,9 +53,16 @@ def run_ssh_command(app, result_text, server, command):
     port = server.get("port", 22)
     name = server.get("name", host)
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    start_time = datetime.now()
 
     def update_ui(tag, text):
         app.after(0, lambda: _insert_tagged(result_text, text, tag))
+
+    def elapsed():
+        delta = datetime.now() - start_time
+        total_secs = int(delta.total_seconds())
+        mins, secs = divmod(total_secs, 60)
+        return f"{mins}m{secs:02d}s" if mins else f"{secs}s"
 
     try:
         client = paramiko.SSHClient()
@@ -71,18 +79,44 @@ def run_ssh_command(app, result_text, server, command):
         else:
             exec_cmd = command
 
-        stdin, stdout, stderr = client.exec_command(exec_cmd)
-        output = stdout.read().decode()
-        error = stderr.read().decode()
-        client.close()
+        stdin, stdout, stderr = client.exec_command(exec_cmd, get_pty=True)
+        channel = stdout.channel
 
-        if output:
-            update_ui("output", output)
+        # Stream stdout line-by-line in real time
+        buf = ""
+        while not channel.exit_status_ready() or channel.recv_ready():
+            if channel.recv_ready():
+                chunk = channel.recv(4096).decode(errors="replace")
+                buf += chunk
+                while "\n" in buf:
+                    line, buf = buf.split("\n", 1)
+                    update_ui("output", line + "\n")
+            else:
+                time.sleep(0.1)
+
+        # Flush any remaining data
+        while channel.recv_ready():
+            chunk = channel.recv(4096).decode(errors="replace")
+            buf += chunk
+        if buf:
+            update_ui("output", buf + "\n")
+
+        # Read any remaining stderr (when not using pty, stderr may have content)
+        error = stderr.read().decode(errors="replace")
         if error:
             update_ui("error", f"STDERR:\n{error}")
 
+        # Report exit code and elapsed time
+        exit_code = channel.recv_exit_status()
+        if exit_code == 0:
+            update_ui("output", f"\n✓ Completed successfully ({elapsed()})\n")
+        else:
+            update_ui("error", f"\n✗ FAILED — exit code {exit_code} ({elapsed()})\n")
+
+        client.close()
+
     except Exception as e:
-        update_ui("error", f"\nError: {str(e)}\n")
+        update_ui("error", f"\nError: {str(e)} ({elapsed()})\n")
 
 
 def _insert_tagged(widget, text, tag):

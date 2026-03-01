@@ -1,6 +1,6 @@
 #!/bin/sh
 
-#source venv/bin/activate
+source venv/bin/activate
 
 #also need global sudo apt install python3-tk 
 
