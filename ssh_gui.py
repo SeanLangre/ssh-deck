@@ -225,7 +225,7 @@ class ServerDialog(tk.Toplevel):
         cmd_list_frame = tk.Frame(self)
         cmd_list_frame.grid(row=row, column=0, columnspan=3, padx=5, pady=3, sticky="ew")
 
-        self.cmd_listbox = tk.Listbox(cmd_list_frame, height=6, width=55)
+        self.cmd_listbox = tk.Listbox(cmd_list_frame, height=12, width=55)
         self.cmd_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         cmd_scroll = tk.Scrollbar(cmd_list_frame, command=self.cmd_listbox.yview)
         cmd_scroll.pack(side=tk.RIGHT, fill=tk.Y)
@@ -578,7 +578,12 @@ class SSHManagerApp:
             messagebox.showerror("Script Not Found",
                                  f"Script file not found:\nscripts/{server['name']}/{script_filename}")
             return
-        output_widget = self._get_output_widget(server["name"])
+        # Open a separate window for each script run
+        win = tk.Toplevel(self.root)
+        win.title(f"{server['name']} — {script_filename}")
+        win.geometry("900x600")
+        output_widget = self._create_output_widget(win)
+        output_widget.pack(fill=tk.BOTH, expand=True)
         thread = threading.Thread(
             target=run_ssh_command,
             args=(self.root, output_widget, server, command),
