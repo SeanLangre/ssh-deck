@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox, simpledialog, colorchooser
+from tkinter import ttk, scrolledtext, messagebox, simpledialog, colorchooser, filedialog
 import threading
 import paramiko
 import json
@@ -21,6 +21,10 @@ def strip_ansi(text):
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SERVERS_FILE = os.path.join(SCRIPT_DIR, "servers.json")
 SCRIPTS_DIR = os.path.join(SCRIPT_DIR, "scripts")
+ICON_CANDIDATES = [
+    "/usr/share/icons/HighContrast/48x48/apps/utilities-terminal.png",
+    "/usr/share/icons/hicolor/48x48/apps/utilities-terminal.png",
+]
 
 
 # ---------- Server Persistence ----------
@@ -71,17 +75,48 @@ def run_ssh_command(app, result_text, server, command):
     state = {"widget": result_text, "lines": 0, "popped": False, "win": None}
     popout_ready = threading.Event()
 
+    def _save_widget_log(widget, parent):
+        content = widget.get("1.0", "end-1c")
+        safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_") or "server"
+        timestamp_for_file = datetime.now().strftime("%Y%m%d-%H%M%S")
+        path = filedialog.asksaveasfilename(
+            parent=parent,
+            title="Save Log As",
+            defaultextension=".txt",
+            initialfile=f"{safe_name}-log-{timestamp_for_file}.txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+        except OSError as e:
+            messagebox.showerror("Save Failed", f"Could not save log:\n{e}", parent=parent)
+            return
+        messagebox.showinfo("Log Saved", f"Saved log to:\n{path}", parent=parent)
+
     def _create_popout():
         """Create popout window on main thread."""
         win = tk.Toplevel(app)
         win.title(f"{name} — {command[:60]}")
         win.geometry("900x600")
+
+        controls = tk.Frame(win)
+        controls.pack(fill=tk.X, padx=6, pady=(6, 0))
+        tk.Button(
+            controls,
+            text="Save Log...",
+            command=lambda: _save_widget_log(w, win),
+            width=10,
+        ).pack(side=tk.RIGHT)
+
         w = scrolledtext.ScrolledText(win, height=20, bg="#1e1e1e", fg="#d4d4d4",
                                       insertbackground="white", font=("Consolas", 10))
         w.tag_config("output", foreground="#4ec9b0")
         w.tag_config("error", foreground="#f44747")
         w.tag_config("cmd", foreground="#569cd6")
-        w.pack(fill=tk.BOTH, expand=True)
+        w.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
         # Copy existing content from main widget
         content = result_text.get("1.0", tk.END)
         if content.strip():
@@ -443,11 +478,24 @@ class SSHManagerApp:
         self.root = root
         self.root.title("SSH GUI Manager")
         self.root.geometry("950x500")
+        self._app_icon = None
+        self._set_window_icon()
 
         self.servers = load_servers()
 
         self._build_ui()
         self._refresh_server_combo()
+
+    def _set_window_icon(self):
+        for path in ICON_CANDIDATES:
+            if not os.path.exists(path):
+                continue
+            try:
+                self._app_icon = tk.PhotoImage(file=path)
+                self.root.iconphoto(True, self._app_icon)
+                return
+            except tk.TclError:
+                continue
 
     def _create_output_widget(self, parent):
         """Create a new ScrolledText output widget with standard tags."""
@@ -677,6 +725,6 @@ class SSHManagerApp:
 
 # ---------- Entry Point ----------
 if __name__ == "__main__":
-    root = tk.Tk()
+    root = tk.Tk(className="SshGuiManager")
     SSHManagerApp(root)
     root.mainloop()

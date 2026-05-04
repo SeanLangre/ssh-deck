@@ -10,9 +10,6 @@ sh start.sh
 
 
 
-
-
-
 # SSH GUI Manager
 
 A lightweight desktop SSH management tool built with Python, Tkinter, and Paramiko. Manage multiple remote servers, run commands, and execute scripts — all from a single GUI.
