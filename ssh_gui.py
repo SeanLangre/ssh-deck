@@ -45,8 +45,16 @@ def get_server_scripts_dir(server_name):
     return os.path.join(SCRIPTS_DIR, server_name)
 
 
-def load_script_content(server_name, script_filename):
-    path = os.path.join(get_server_scripts_dir(server_name), script_filename)
+def get_script_dir(server_name, project):
+    return os.path.join(SCRIPTS_DIR, server_name, project or "ALL")
+
+
+def get_script_path(server_name, project, script_filename):
+    return os.path.join(get_script_dir(server_name, project), script_filename)
+
+
+def load_script_content(server_name, project, script_filename):
+    path = get_script_path(server_name, project, script_filename)
     with open(path, "r") as f:
         return f.read().strip()
 
@@ -320,8 +328,8 @@ class ServerDialog(tk.Toplevel):
 
         script = label_to_script_name(label)
 
-        # Create the script file if it doesn't exist
-        scripts_dir = get_server_scripts_dir(server_name)
+        # Create the script file if it doesn't exist (under the project subfolder)
+        scripts_dir = get_script_dir(server_name, project)
         os.makedirs(scripts_dir, exist_ok=True)
         script_path = os.path.join(scripts_dir, script)
         if not os.path.exists(script_path):
@@ -344,7 +352,7 @@ class ServerDialog(tk.Toplevel):
         if not server_name:
             messagebox.showinfo("No Name", "Enter a server name first.", parent=self)
             return
-        script_path = os.path.join(get_server_scripts_dir(server_name), cmd["script"])
+        script_path = get_script_path(server_name, cmd.get("project"), cmd["script"])
         if not os.path.exists(script_path):
             os.makedirs(os.path.dirname(script_path), exist_ok=True)
             with open(script_path, "w") as f:
@@ -543,6 +551,8 @@ class SSHManagerApp:
         tk.Button(top_frame, text="Add", command=self._add_server, width=6).pack(side=tk.LEFT, padx=2)
         tk.Button(top_frame, text="Edit", command=self._edit_server, width=6).pack(side=tk.LEFT, padx=2)
         tk.Button(top_frame, text="Delete", command=self._delete_server, width=6).pack(side=tk.LEFT, padx=2)
+        tk.Button(top_frame, text="SSH", command=self._open_ssh_terminal, width=6,
+                  bg="#1d1d1d", fg="#00ff00", activebackground="#1d1d1d").pack(side=tk.LEFT, padx=(10, 2))
 
         # --- Quick command buttons (dynamic per server) ---
         self.btn_frame = tk.Frame(self.root)
@@ -573,6 +583,24 @@ class SSHManagerApp:
     def _on_server_selected(self):
         self._refresh_buttons()
         self._switch_output()
+
+    def _open_ssh_terminal(self):
+        idx = self.server_combo.current()
+        if idx < 0:
+            messagebox.showinfo("No Server", "Select a server first.")
+            return
+        s = self.servers[idx]
+        ssh_cmd = ["ssh"]
+        if s.get("key_path"):
+            ssh_cmd += ["-i", s["key_path"]]
+        if s.get("port") and int(s["port"]) != 22:
+            ssh_cmd += ["-p", str(s["port"])]
+        ssh_cmd.append(f"{s['username']}@{s['host']}")
+        import subprocess, shutil
+        if not shutil.which("x-terminal-emulator"):
+            messagebox.showerror("Terminal Not Found", "x-terminal-emulator is not installed or not in PATH.")
+            return
+        subprocess.Popen(["x-terminal-emulator", "-t", f"ssh {s['name']}", "-e", *ssh_cmd])
 
     # --- Quick command buttons ---
     def _refresh_buttons(self):
@@ -607,7 +635,7 @@ class SSHManagerApp:
             for i, cmd in enumerate(cmds):
                 color = cmd.get("color")
                 btn = tk.Button(grid, text=cmd["label"],
-                                command=lambda c=cmd["script"]: self._run_quick_command(c))
+                                command=lambda s=cmd["script"], p=cmd.get("project"): self._run_quick_command(s, p))
                 if color:
                     btn.config(bg=color, activebackground=color)
                 r, c = divmod(i, cols)
@@ -615,16 +643,17 @@ class SSHManagerApp:
             for c in range(cols):
                 grid.columnconfigure(c, weight=1)
 
-    def _run_quick_command(self, script_filename):
+    def _run_quick_command(self, script_filename, project=None):
         idx = self.server_combo.current()
         if idx < 0:
             return
         server = self.servers[idx]
         try:
-            command = load_script_content(server["name"], script_filename)
+            command = load_script_content(server["name"], project, script_filename)
         except FileNotFoundError:
+            rel = os.path.join(server["name"], project or "ALL", script_filename)
             messagebox.showerror("Script Not Found",
-                                 f"Script file not found:\nscripts/{server['name']}/{script_filename}")
+                                 f"Script file not found:\nscripts/{rel}")
             return
         # Open a separate window for each script run
         win = tk.Toplevel(self.root)
