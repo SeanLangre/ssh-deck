@@ -28,16 +28,86 @@ ICON_CANDIDATES = [
 
 
 # ---------- Server Persistence ----------
+# Config is stored split across the scripts folder:
+#   scripts/<server>/server.json          -> connection fields (no commands)
+#   scripts/<server>/<project>/commands.json -> that project's command list
+# Commands without a project live under the "ALL" folder. The in-memory
+# server dict keeps the old flat shape ({..., "commands": [...]}) so the rest
+# of the app is unchanged; each command carries its "project" key.
+SERVER_META_FIELDS = ("host", "port", "username", "key_path", "login_shell")
+COMMANDS_FILENAME = "commands.json"
+SERVER_META_FILENAME = "server.json"
+
+
 def load_servers():
-    if not os.path.exists(SERVERS_FILE):
+    # One-time migration from a legacy flat servers.json.
+    if os.path.exists(SERVERS_FILE):
+        with open(SERVERS_FILE, "r") as f:
+            legacy = json.load(f)
+        save_servers(legacy)
+        os.rename(SERVERS_FILE, SERVERS_FILE + ".migrated")
+        return legacy
+
+    if not os.path.isdir(SCRIPTS_DIR):
         return []
-    with open(SERVERS_FILE, "r") as f:
-        return json.load(f)
+
+    servers = []
+    for name in sorted(os.listdir(SCRIPTS_DIR)):
+        server_dir = os.path.join(SCRIPTS_DIR, name)
+        meta_path = os.path.join(server_dir, SERVER_META_FILENAME)
+        if not os.path.isfile(meta_path):
+            continue
+        with open(meta_path, "r") as f:
+            server = json.load(f)
+        server["name"] = name
+
+        commands = []
+        for project in sorted(os.listdir(server_dir)):
+            cmds_path = os.path.join(server_dir, project, COMMANDS_FILENAME)
+            if not os.path.isfile(cmds_path):
+                continue
+            with open(cmds_path, "r") as f:
+                for cmd in json.load(f):
+                    cmd["project"] = project
+                    commands.append(cmd)
+        server["commands"] = commands
+        servers.append(server)
+    return servers
+
+
+def save_server(server):
+    """Write one server's split config, replacing its stale command files."""
+    server_dir = get_server_scripts_dir(server["name"])
+    os.makedirs(server_dir, exist_ok=True)
+
+    meta = {k: server[k] for k in SERVER_META_FIELDS if k in server}
+    with open(os.path.join(server_dir, SERVER_META_FILENAME), "w") as f:
+        json.dump(meta, f, indent=2)
+
+    # Group commands by project folder (missing project -> "ALL").
+    groups = {}
+    for cmd in server.get("commands", []):
+        project = cmd.get("project") or "ALL"
+        stored = {k: v for k, v in cmd.items() if k != "project"}
+        groups.setdefault(project, []).append(stored)
+
+    # Remove commands.json files for projects that no longer have commands.
+    for project in os.listdir(server_dir):
+        proj_dir = os.path.join(server_dir, project)
+        cmds_path = os.path.join(proj_dir, COMMANDS_FILENAME)
+        if os.path.isfile(cmds_path) and project not in groups:
+            os.remove(cmds_path)
+
+    for project, cmds in groups.items():
+        proj_dir = os.path.join(server_dir, project)
+        os.makedirs(proj_dir, exist_ok=True)
+        with open(os.path.join(proj_dir, COMMANDS_FILENAME), "w") as f:
+            json.dump(cmds, f, indent=2)
 
 
 def save_servers(servers):
-    with open(SERVERS_FILE, "w") as f:
-        json.dump(servers, f, indent=2)
+    for server in servers:
+        save_server(server)
 
 
 # ---------- Script Helpers ----------
@@ -730,6 +800,11 @@ class SSHManagerApp:
                     self.result_text = None
                 widget.destroy()
             self.servers.pop(idx)
+            # Config now lives in the server's folder, so remove it entirely.
+            server_dir = get_server_scripts_dir(name)
+            if os.path.isdir(server_dir):
+                import shutil
+                shutil.rmtree(server_dir)
             save_servers(self.servers)
             self._refresh_server_combo()
 
