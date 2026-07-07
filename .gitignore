@@ -3,5 +3,7 @@ __pycache__/**
 history.json
 servers.json
 servers_backup.json
-scripts/**
+scripts/mac-server/**
+scripts/mac-pa/**
+scripts/pc-ext-pa/**
 backup.tar.gz

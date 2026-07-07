@@ -119,14 +119,40 @@ def get_script_dir(server_name, project):
     return os.path.join(SCRIPTS_DIR, server_name, project or "ALL")
 
 
+# Shared scripts are written once with a $PROJECT placeholder. A project's
+# command may name a script that only exists in a _shared folder; we fall back
+# to it and inject PROJECT=<remote dir> at run time. Two _shared locations are
+# supported: per-server (scripts/<server>/_shared) and global (scripts/_shared),
+# so a script shared across every server lives in one place.
+SHARED_DIR_NAME = "_shared"
+
+
+def project_remote_dir(project):
+    """Remote project directory name (~/Projects/<dir>) for a project label."""
+    return (project or "").lower()
+
+
 def get_script_path(server_name, project, script_filename):
-    return os.path.join(get_script_dir(server_name, project), script_filename)
+    """Resolve a script: project folder, then server _shared, then global _shared."""
+    candidates = [
+        os.path.join(get_script_dir(server_name, project), script_filename),
+        os.path.join(SCRIPTS_DIR, server_name, SHARED_DIR_NAME, script_filename),
+        os.path.join(SCRIPTS_DIR, SHARED_DIR_NAME, script_filename),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return candidates[0]  # non-existent; report the missing project-folder path
 
 
 def load_script_content(server_name, project, script_filename):
     path = get_script_path(server_name, project, script_filename)
     with open(path, "r") as f:
-        return f.read().strip()
+        content = f.read().strip()
+    # When served from _shared, bind $PROJECT to this project's remote dir.
+    if os.path.basename(os.path.dirname(path)) == SHARED_DIR_NAME:
+        content = f"PROJECT={project_remote_dir(project)}\n{content}"
+    return content
 
 
 def label_to_script_name(label):
