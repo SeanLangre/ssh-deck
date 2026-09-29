@@ -88,3 +88,15 @@ Each server can have custom command buttons configured through the Edit dialog:
 - **Script** — Shell script stored in `scripts/<server-name>/`
 - **Color** — Custom button color for visual grouping
 - **Project** — Optional project tag shown as a prefix
+
+### Download commands
+
+A script whose first line is `#@download` copies a remote file or folder to this machine over SFTP instead of running a command:
+
+```
+#@download
+remote: C:\Users\user\Documents\project\Assets\Bundles
+local: ~/Downloads/cc-android-bundles
+```
+
+Folders are copied recursively; existing local files are overwritten.

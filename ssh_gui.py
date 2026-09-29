@@ -155,6 +155,42 @@ def load_script_content(server_name, project, script_filename):
     return content
 
 
+# A script whose first line is "#@download" is not run remotely; instead it
+# copies a remote file or folder to this machine over SFTP:
+#   #@download
+#   remote: C:\path\on\server\SomeFolder
+#   local: ~/Downloads/some-folder
+DOWNLOAD_MARKER = "#@download"
+
+
+def parse_download_directive(content):
+    """Return {"remote", "local"} if content is a download directive, else None."""
+    lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
+    # Skip the PROJECT= line injected for _shared scripts.
+    if lines and lines[0].startswith("PROJECT="):
+        project = lines.pop(0).split("=", 1)[1]
+    else:
+        project = ""
+    if not lines or lines[0] != DOWNLOAD_MARKER:
+        return None
+    fields = {}
+    for ln in lines[1:]:
+        if ln.startswith("#") or ":" not in ln:
+            continue
+        key, value = ln.split(":", 1)
+        fields[key.strip().lower()] = value.strip().replace("$PROJECT", project)
+    if "remote" not in fields or "local" not in fields:
+        return None
+    return fields
+
+
+def to_sftp_path(path):
+    """Windows paths (C:\\foo\\bar) become /C:/foo/bar for the OpenSSH SFTP server."""
+    if re.match(r"^[A-Za-z]:[\\/]", path):
+        return "/" + path.replace("\\", "/")
+    return path
+
+
 def label_to_script_name(label):
     import re
     name = label.lower().strip()
@@ -305,6 +341,52 @@ def run_ssh_command(app, result_text, server, command):
 
     except Exception as e:
         update_ui("error", f"\nError: {str(e)} ({elapsed()})\n")
+
+
+def run_sftp_download(app, result_text, server, remote, local):
+    """Copy a remote file or folder (recursively) to a local path over SFTP."""
+    import stat
+    name = server.get("name", server["host"])
+    local = os.path.expanduser(local)
+    start_time = datetime.now()
+
+    def log(tag, text):
+        app.after(0, lambda: (_insert_tagged(result_text, text, tag), result_text.see(tk.END)))
+
+    def elapsed():
+        mins, secs = divmod(int((datetime.now() - start_time).total_seconds()), 60)
+        return f"{mins}m{secs:02d}s" if mins else f"{secs}s"
+
+    counts = {"files": 0, "bytes": 0}
+
+    def fetch(sftp, rpath, lpath):
+        attr = sftp.stat(rpath)
+        if stat.S_ISDIR(attr.st_mode):
+            os.makedirs(lpath, exist_ok=True)
+            for entry in sftp.listdir_attr(rpath):
+                fetch(sftp, f"{rpath}/{entry.filename}", os.path.join(lpath, entry.filename))
+        else:
+            sftp.get(rpath, lpath)
+            counts["files"] += 1
+            counts["bytes"] += attr.st_size
+            log("output", f"  {os.path.relpath(lpath, local) if lpath != local else os.path.basename(lpath)}"
+                          f" ({attr.st_size / 1024:.0f} KB)\n")
+
+    timestamp = start_time.strftime("%Y-%m-%d %H:%M:%S")
+    log("cmd", f"\n[{timestamp}] {name} download\n  {remote}\n  -> {local}\n")
+    try:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(hostname=server["host"], port=server.get("port", 22),
+                       username=server["username"], key_filename=server["key_path"])
+        sftp = client.open_sftp()
+        fetch(sftp, to_sftp_path(remote), local)
+        sftp.close()
+        client.close()
+        log("output", f"\n✓ Downloaded {counts['files']} files "
+                      f"({counts['bytes'] / 1024 / 1024:.1f} MB) to {local} ({elapsed()})\n")
+    except Exception as e:
+        log("error", f"\nError: {e} ({elapsed()})\n")
 
 
 def _insert_tagged(widget, text, tag):
@@ -757,9 +839,14 @@ class SSHManagerApp:
         win.geometry("900x600")
         output_widget = self._create_output_widget(win)
         output_widget.pack(fill=tk.BOTH, expand=True)
+        download = parse_download_directive(command)
+        if download:
+            target, args = run_sftp_download, (download["remote"], download["local"])
+        else:
+            target, args = run_ssh_command, (command,)
         thread = threading.Thread(
-            target=run_ssh_command,
-            args=(self.root, output_widget, server, command),
+            target=target,
+            args=(self.root, output_widget, server, *args),
         )
         thread.start()
 
