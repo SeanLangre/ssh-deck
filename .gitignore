@@ -12,3 +12,4 @@ dist/**
 SSH-GUI.spec
 AppDir/**
 *.AppImage
+appimage-build.sh

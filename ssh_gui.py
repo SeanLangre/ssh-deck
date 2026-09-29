@@ -5,6 +5,7 @@ import threading
 import paramiko
 import json
 import os
+import sys
 from datetime import datetime
 import time
 import re
@@ -18,7 +19,14 @@ def strip_ansi(text):
     return text
 
 # ---------- Config ----------
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if getattr(sys, "frozen", False):
+    # Packaged build (PyInstaller/AppImage): the bundle is read-only, so keep
+    # config in the user's config dir.
+    SCRIPT_DIR = os.path.join(
+        os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+        "ssh-gui-manager")
+else:
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SERVERS_FILE = os.path.join(SCRIPT_DIR, "servers.json")
 SCRIPTS_DIR = os.path.join(SCRIPT_DIR, "scripts")
 ICON_CANDIDATES = [
@@ -108,6 +116,74 @@ def save_server(server):
 def save_servers(servers):
     for server in servers:
         save_server(server)
+
+
+# ---------- Config Export / Import ----------
+# The export is one JSON blob: every server (with its commands) plus the text
+# of every script under scripts/, so importing it rebuilds the same setup.
+EXPORT_FORMAT = "ssh-gui-config"
+EXPORT_VERSION = 1
+
+
+def export_config(servers):
+    scripts = {}
+    if os.path.isdir(SCRIPTS_DIR):
+        for dirpath, _, filenames in os.walk(SCRIPTS_DIR):
+            for filename in sorted(filenames):
+                # server.json / commands.json are rebuilt from "servers".
+                if filename in (SERVER_META_FILENAME, COMMANDS_FILENAME):
+                    continue
+                path = os.path.join(dirpath, filename)
+                rel = os.path.relpath(path, SCRIPTS_DIR).replace(os.sep, "/")
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        scripts[rel] = f.read()
+                except (OSError, UnicodeDecodeError):
+                    continue  # skip binary/unreadable files
+    return json.dumps({
+        "format": EXPORT_FORMAT,
+        "version": EXPORT_VERSION,
+        "servers": servers,
+        "scripts": scripts,
+    }, indent=2)
+
+
+def _safe_scripts_path(rel):
+    """Resolve rel under SCRIPTS_DIR, refusing anything that escapes it."""
+    root = os.path.realpath(SCRIPTS_DIR)
+    path = os.path.realpath(os.path.join(root, rel))
+    if os.path.commonpath([root, path]) != root or path == root:
+        raise ValueError(f"Unsafe path in config: {rel}")
+    return path
+
+
+def parse_config(text):
+    """Validate an exported config; returns (servers, scripts) or raises ValueError."""
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Not valid JSON: {e}")
+    if not isinstance(data, dict) or data.get("format") != EXPORT_FORMAT:
+        raise ValueError("This is not an SSH GUI config export.")
+    servers = data.get("servers", [])
+    scripts = data.get("scripts", {})
+    if not isinstance(servers, list) or not isinstance(scripts, dict):
+        raise ValueError("Config is malformed.")
+    for server in servers:
+        if not isinstance(server, dict) or not server.get("name"):
+            raise ValueError("Every server needs a name.")
+        _safe_scripts_path(server["name"])
+    for rel in scripts:
+        _safe_scripts_path(rel)
+    return servers, scripts
+
+
+def write_imported_scripts(scripts):
+    for rel, content in scripts.items():
+        path = _safe_scripts_path(rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
 
 
 # ---------- Script Helpers ----------
@@ -731,6 +807,8 @@ class SSHManagerApp:
         tk.Button(top_frame, text="Delete", command=self._delete_server, width=6).pack(side=tk.LEFT, padx=2)
         tk.Button(top_frame, text="SSH", command=self._open_ssh_terminal, width=6,
                   bg="#1d1d1d", fg="#00ff00", activebackground="#1d1d1d").pack(side=tk.LEFT, padx=(10, 2))
+        tk.Button(top_frame, text="Import", command=self._import_config, width=7).pack(side=tk.RIGHT, padx=2)
+        tk.Button(top_frame, text="Copy Config", command=self._copy_config, width=10).pack(side=tk.RIGHT, padx=2)
 
         # --- Quick command buttons (dynamic per server) ---
         self.btn_frame = tk.Frame(self.root)
@@ -920,6 +998,86 @@ class SSHManagerApp:
                 shutil.rmtree(server_dir)
             save_servers(self.servers)
             self._refresh_server_combo()
+
+    # --- Config export / import ---
+    def _copy_config(self):
+        text = export_config(self.servers)
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        messagebox.showinfo("Config Copied",
+                            f"Copied config for {len(self.servers)} server(s) to the clipboard.")
+
+    def _import_config(self):
+        win = tk.Toplevel(self.root)
+        win.title("Import Config")
+        win.geometry("700x500")
+        win.grab_set()
+
+        tk.Label(win, text="Paste an exported config below (or load it from a file):").pack(
+            anchor="w", padx=6, pady=(6, 0))
+        box = scrolledtext.ScrolledText(win, font=("Consolas", 10))
+        box.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+
+        # Pre-fill from the clipboard when it already holds an export.
+        try:
+            clip = self.root.clipboard_get()
+            parse_config(clip)
+            box.insert("1.0", clip)
+        except (tk.TclError, ValueError):
+            pass
+
+        def load_file():
+            path = filedialog.askopenfilename(
+                parent=win, title="Open Config",
+                filetypes=[("JSON files", "*.json"), ("All files", "*.*")])
+            if not path:
+                return
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read()
+            except OSError as e:
+                messagebox.showerror("Open Failed", str(e), parent=win)
+                return
+            box.delete("1.0", tk.END)
+            box.insert("1.0", content)
+
+        def do_import():
+            try:
+                servers, scripts = parse_config(box.get("1.0", "end-1c"))
+            except ValueError as e:
+                messagebox.showerror("Invalid Config", str(e), parent=win)
+                return
+            existing = {s["name"] for s in self.servers}
+            replaced = [s["name"] for s in servers if s["name"] in existing]
+            msg = f"Import {len(servers)} server(s) and {len(scripts)} script file(s)?"
+            if replaced:
+                msg += "\n\nThese servers will be overwritten:\n  " + "\n  ".join(replaced)
+            if scripts:
+                msg += "\n\nScript files with the same path will be overwritten."
+            if not messagebox.askyesno("Confirm Import", msg, parent=win):
+                return
+            try:
+                write_imported_scripts(scripts)
+                for server in servers:
+                    idx = next((i for i, s in enumerate(self.servers)
+                                if s["name"] == server["name"]), None)
+                    if idx is None:
+                        self.servers.append(server)
+                    else:
+                        self.servers[idx] = server
+                save_servers(self.servers)
+            except (OSError, ValueError) as e:
+                messagebox.showerror("Import Failed", str(e), parent=win)
+                return
+            self._refresh_server_combo()
+            win.destroy()
+            messagebox.showinfo("Import Complete", f"Imported {len(servers)} server(s).")
+
+        btns = tk.Frame(win)
+        btns.pack(pady=(0, 6))
+        tk.Button(btns, text="Load File...", command=load_file, width=10).pack(side=tk.LEFT, padx=5)
+        tk.Button(btns, text="Import", command=do_import, width=10).pack(side=tk.LEFT, padx=5)
+        tk.Button(btns, text="Cancel", command=win.destroy, width=10).pack(side=tk.LEFT, padx=5)
 
     # --- Command execution ---
     def _send_command(self):
