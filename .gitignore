@@ -10,3 +10,5 @@ backup.tar.gz
 build/**
 dist/**
 SSH-GUI.spec
+AppDir/**
+*.AppImage
