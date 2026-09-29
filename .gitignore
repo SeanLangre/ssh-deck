@@ -7,3 +7,6 @@ scripts/mac-server/**
 scripts/mac-pa/**
 scripts/pc-ext-pa/**
 backup.tar.gz
+build/**
+dist/**
+SSH-GUI.spec
