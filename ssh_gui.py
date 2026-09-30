@@ -38,6 +38,30 @@ ICON_CANDIDATES = [
     "/usr/share/icons/HighContrast/48x48/apps/utilities-terminal.png",
     "/usr/share/icons/hicolor/48x48/apps/utilities-terminal.png",
 ]
+# Terminal emulators for the SSH button, tried in order after $TERMINAL.
+# Each entry is (executable, args that come before the command to run).
+TERMINAL_CANDIDATES = [
+    ("x-terminal-emulator", ["-e"]),
+    ("gnome-terminal", ["--"]),
+    ("konsole", ["-e"]),
+    ("xfce4-terminal", ["-x"]),
+    ("kitty", []),
+    ("alacritty", ["-e"]),
+    ("foot", []),
+    ("wezterm", ["start", "--"]),
+    ("xterm", ["-e"]),
+]
+
+
+def find_terminal():
+    """Return the argv prefix that runs a command in a terminal, or None."""
+    env_term = os.environ.get("TERMINAL")
+    if env_term and shutil.which(env_term):
+        return [env_term, "-e"]
+    for exe, args in TERMINAL_CANDIDATES:
+        if shutil.which(exe):
+            return [exe, *args]
+    return None
 
 
 # ---------- Server Persistence ----------
@@ -815,10 +839,12 @@ class SSHManagerApp:
         if s.get("port") and int(s["port"]) != 22:
             ssh_cmd += ["-p", str(s["port"])]
         ssh_cmd.append(f"{s['username']}@{s['host']}")
-        if not shutil.which("x-terminal-emulator"):
-            messagebox.showerror("Terminal Not Found", "x-terminal-emulator is not installed or not in PATH.")
+        terminal = find_terminal()
+        if not terminal:
+            messagebox.showerror("Terminal Not Found",
+                                 "No terminal emulator found. Set $TERMINAL or install one.")
             return
-        subprocess.Popen(["x-terminal-emulator", "-t", f"ssh {s['name']}", "-e", *ssh_cmd])
+        subprocess.Popen([*terminal, *ssh_cmd])
 
     # --- Quick command buttons ---
     def _refresh_buttons(self):

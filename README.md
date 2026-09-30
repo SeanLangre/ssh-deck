@@ -11,7 +11,7 @@ A lightweight desktop SSH management tool built with Python, Tkinter, and Parami
 - **Live Streaming Output** — Real-time output with color-coded tags (blue = command, green = output, red = error)
 - **Per-Server Output** — Each server keeps its own output panel; long output (>20 lines) pops out into a separate window with a Save Log button
 - **Command Input** — Type and send ad-hoc commands to the selected server
-- **SSH Terminal** — Open an interactive `ssh` session to the selected server in a terminal
+- **SSH Terminal** — Open an interactive `ssh` session to the selected server in a terminal (`$TERMINAL`, or the first common terminal emulator found)
 - **Config Export / Import** — Copy every server, command, and script to the clipboard as JSON and import it on another machine
 
 ## Requirements
