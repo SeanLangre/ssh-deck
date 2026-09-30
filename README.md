@@ -2,6 +2,8 @@
 
 A lightweight desktop SSH management tool built with Python, Tkinter, and Paramiko. Manage multiple remote servers, run commands, and execute scripts — all from a single GUI.
 
+![Main window with quick command buttons grouped by project](image1.png)
+
 ## Features
 
 - **Server Management** — Add, edit, and delete SSH server configurations
@@ -64,6 +66,8 @@ Servers are managed through the GUI (Add/Edit/Delete buttons). Each server store
 | Username | SSH login user |
 | Key Path | Path to SSH private key |
 | Login Shell | Wrap commands in `bash -l` to load the user profile (uncheck for Windows servers) |
+
+![Edit Server dialog with connection settings and quick commands](image2.png)
 
 ## Quick Commands
 
