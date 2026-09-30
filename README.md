@@ -48,7 +48,7 @@ python3 -m venv venv
             └── git-pull.sh
 ```
 
-When run from source, `scripts/` lives next to `ssh_gui.py`. The packaged AppImage keeps it in `~/.config/ssh-gui-manager/scripts/` instead. A legacy flat `servers.json` is migrated into this layout automatically on first launch.
+When run from source, `scripts/` lives next to `ssh_gui.py`. The packaged AppImage keeps it in `~/.config/ssh-gui-manager/scripts/` instead.
 
 ## Server Configuration
 

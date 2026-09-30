@@ -30,9 +30,11 @@ if getattr(sys, "frozen", False):
         "ssh-gui-manager")
 else:
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-SERVERS_FILE = os.path.join(SCRIPT_DIR, "servers.json")
 SCRIPTS_DIR = os.path.join(SCRIPT_DIR, "scripts")
+# Bundled files (icon.png) live in PyInstaller's unpack dir when frozen.
+RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 ICON_CANDIDATES = [
+    os.path.join(RESOURCE_DIR, "icon.png"),
     "/usr/share/icons/HighContrast/48x48/apps/utilities-terminal.png",
     "/usr/share/icons/hicolor/48x48/apps/utilities-terminal.png",
 ]
@@ -44,21 +46,13 @@ ICON_CANDIDATES = [
 #   scripts/<server>/<project>/commands.json -> that project's command list
 # Commands without a project live under the "ALL" folder. The in-memory
 # server dict keeps the old flat shape ({..., "commands": [...]}) so the rest
-# of the app is unchanged; each command carries its "project" key.
+# of the app works on one server object; each command carries its "project" key.
 SERVER_META_FIELDS = ("host", "port", "username", "key_path", "login_shell")
 COMMANDS_FILENAME = "commands.json"
 SERVER_META_FILENAME = "server.json"
 
 
 def load_servers():
-    # One-time migration from a legacy flat servers.json.
-    if os.path.exists(SERVERS_FILE):
-        with open(SERVERS_FILE, "r") as f:
-            legacy = json.load(f)
-        save_servers(legacy)
-        os.rename(SERVERS_FILE, SERVERS_FILE + ".migrated")
-        return legacy
-
     if not os.path.isdir(SCRIPTS_DIR):
         return []
 
@@ -282,7 +276,7 @@ POPOUT_LINE_THRESHOLD = 20
 def create_output_widget(parent):
     """Create a ScrolledText output widget with the standard color tags."""
     widget = scrolledtext.ScrolledText(parent, height=20, bg="#1e1e1e", fg="#d4d4d4",
-                                       insertbackground="white", font=("Consolas", 10))
+                                       insertbackground="white", font="TkFixedFont")
     widget.tag_config("output", foreground="#4ec9b0")
     widget.tag_config("error", foreground="#f44747")
     widget.tag_config("cmd", foreground="#569cd6")
@@ -297,6 +291,8 @@ def format_elapsed(start_time):
 def ssh_connect(server):
     """Open an SSH connection; the returned client is usable as a context manager."""
     client = paramiko.SSHClient()
+    # Reject hosts whose key no longer matches known_hosts; auto-accept unknown ones.
+    client.load_system_host_keys()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:
         client.connect(hostname=server["host"], port=server.get("port", 22),
@@ -510,7 +506,7 @@ class ServerDialog(tk.Toplevel):
         row += 1
 
         # --- Commands section ---
-        tk.Label(self, text="Quick Commands (scripts):", font=("Arial", 10, "bold")).grid(
+        tk.Label(self, text="Quick Commands (scripts):", font="TkHeadingFont").grid(
             row=row, column=0, columnspan=3, padx=5, pady=(10, 3), sticky="w")
         row += 1
 
@@ -797,7 +793,7 @@ class SSHManagerApp:
         self.out_frame = tk.Frame(self.root)
         self.out_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 5))
 
-        tk.Label(self.out_frame, text="Output", font=("Arial", 12)).pack(anchor="w")
+        tk.Label(self.out_frame, text="Output", font="TkHeadingFont").pack(anchor="w")
 
         # Per-server output widgets
         self.server_outputs = {}  # server_name -> ScrolledText
@@ -850,7 +846,7 @@ class SSHManagerApp:
         cols = 5
         for project, cmds in groups.items():
             if project:
-                tk.Label(self.btn_frame, text=project, font=("Arial", 9, "bold")).pack(anchor="w", padx=2, pady=(4, 0))
+                tk.Label(self.btn_frame, text=project, font="TkHeadingFont").pack(anchor="w", padx=2, pady=(4, 0))
             grid = tk.Frame(self.btn_frame)
             grid.pack(fill=tk.X, padx=2, pady=(0, 2))
             for i, cmd in enumerate(cmds):
@@ -991,7 +987,7 @@ class SSHManagerApp:
 
         tk.Label(win, text="Paste an exported config below (or load it from a file):").pack(
             anchor="w", padx=6, pady=(6, 0))
-        box = scrolledtext.ScrolledText(win, font=("Consolas", 10))
+        box = scrolledtext.ScrolledText(win, font="TkFixedFont")
         box.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
 
         # Pre-fill from the clipboard when it already holds an export.

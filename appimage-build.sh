@@ -5,7 +5,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 pip install pyinstaller
 rm -rf build dist
-python -m PyInstaller --onedir --name ssh-GUI ssh_gui.py
+python -m PyInstaller --onedir --name ssh-GUI --add-data "icon.png:." ssh_gui.py
 
 rm -rf AppDir
 
