@@ -18,6 +18,7 @@ A lightweight desktop SSH management tool built with Python, Tkinter, and Parami
 
 ## Requirements
 
+- Linux (uses `xdg-open` and a Linux terminal emulator; remote servers can be any OS with an SSH server)
 - Python 3
 - [Paramiko](https://www.paramiko.org/)
 - Tkinter — included with most Python installations. On Debian/Ubuntu: `sudo apt install python3-tk`
@@ -25,11 +26,10 @@ A lightweight desktop SSH management tool built with Python, Tkinter, and Parami
 ## Usage
 
 ```
-python3 -m venv venv
 ./start.sh
 ```
 
-`start.sh` activates the venv, installs `requirements.txt` if Paramiko is missing, and launches `ssh_deck.py`.
+`start.sh` creates `venv/` if it doesn't exist, activates it, installs `requirements.txt` if Paramiko is missing, and launches `ssh_deck.py`.
 
 ## Project Structure
 
@@ -114,4 +114,4 @@ The export includes hostnames, usernames, and key paths (not the keys themselves
 APPIMAGETOOL=/path/to/appimagetool-x86_64.AppImage ./appimage-build.sh
 ```
 
-Run it after creating `venv/` (see [Usage](#usage)); it installs PyInstaller into the venv and bundles `icon.png`. `APPIMAGETOOL` defaults to `appimagetool` on your `PATH`.
+Run it after creating `venv/` (running `./start.sh` once does this); it installs PyInstaller into the venv and bundles `icon.png`. `APPIMAGETOOL` defaults to `appimagetool` on your `PATH`.
