@@ -5,6 +5,9 @@ import threading
 import paramiko
 import json
 import os
+import shutil
+import stat
+import subprocess
 import sys
 from datetime import datetime
 import time
@@ -268,7 +271,6 @@ def to_sftp_path(path):
 
 
 def label_to_script_name(label):
-    import re
     name = label.lower().strip()
     name = re.sub(r'[^a-z0-9]+', '-', name).strip('-')
     return name + ".sh"
@@ -277,15 +279,39 @@ def label_to_script_name(label):
 POPOUT_LINE_THRESHOLD = 20
 
 
+def create_output_widget(parent):
+    """Create a ScrolledText output widget with the standard color tags."""
+    widget = scrolledtext.ScrolledText(parent, height=20, bg="#1e1e1e", fg="#d4d4d4",
+                                       insertbackground="white", font=("Consolas", 10))
+    widget.tag_config("output", foreground="#4ec9b0")
+    widget.tag_config("error", foreground="#f44747")
+    widget.tag_config("cmd", foreground="#569cd6")
+    return widget
+
+
+def format_elapsed(start_time):
+    mins, secs = divmod(int((datetime.now() - start_time).total_seconds()), 60)
+    return f"{mins}m{secs:02d}s" if mins else f"{secs}s"
+
+
+def ssh_connect(server):
+    """Open an SSH connection; the returned client is usable as a context manager."""
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        client.connect(hostname=server["host"], port=server.get("port", 22),
+                       username=server["username"], key_filename=server["key_path"])
+    except Exception:
+        client.close()
+        raise
+    return client
+
+
 # ---------- SSH Function ----------
 def run_ssh_command(app, result_text, server, command):
-    host = server["host"]
-    username = server["username"]
-    key_path = server["key_path"]
-    port = server.get("port", 22)
-    name = server.get("name", host)
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    name = server.get("name", server["host"])
     start_time = datetime.now()
+    timestamp = start_time.strftime("%Y-%m-%d %H:%M:%S")
 
     # Mutable state for auto-popout
     state = {"widget": result_text, "lines": 0, "popped": False, "win": None}
@@ -327,11 +353,7 @@ def run_ssh_command(app, result_text, server, command):
             width=10,
         ).pack(side=tk.RIGHT)
 
-        w = scrolledtext.ScrolledText(win, height=20, bg="#1e1e1e", fg="#d4d4d4",
-                                      insertbackground="white", font=("Consolas", 10))
-        w.tag_config("output", foreground="#4ec9b0")
-        w.tag_config("error", foreground="#f44747")
-        w.tag_config("cmd", foreground="#569cd6")
+        w = create_output_widget(win)
         w.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
         # Copy existing content from main widget
         content = result_text.get("1.0", tk.END)
@@ -358,80 +380,59 @@ def run_ssh_command(app, result_text, server, command):
                 popout_ready.wait(timeout=5)
         app.after(0, lambda: _insert_tagged(state["widget"], text, tag))
 
-    def elapsed():
-        delta = datetime.now() - start_time
-        total_secs = int(delta.total_seconds())
-        mins, secs = divmod(total_secs, 60)
-        return f"{mins}m{secs:02d}s" if mins else f"{secs}s"
+    update_ui("cmd", f"\n[{timestamp}] {name} >> {command}\n")
+
+    # Wrap in login shell to load user profile (PATH, etc.)
+    if server.get("login_shell", True):
+        escaped = command.replace("'", "'\\''")
+        exec_cmd = f"bash -l -c '{escaped}'"
+    else:
+        exec_cmd = command
 
     try:
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        with ssh_connect(server) as client:
+            # With a pty, stderr is merged into stdout.
+            _, stdout, _ = client.exec_command(exec_cmd, get_pty=True)
+            channel = stdout.channel
 
-        update_ui("cmd", f"\n[{timestamp}] {name} >> {command}\n")
+            # Stream output line-by-line in real time
+            buf = ""
+            while not channel.exit_status_ready() or channel.recv_ready():
+                if channel.recv_ready():
+                    chunk = channel.recv(4096).decode(errors="replace")
+                    buf += chunk
+                    while "\n" in buf:
+                        line, buf = buf.split("\n", 1)
+                        update_ui("output", line + "\n")
+                else:
+                    time.sleep(0.1)
 
-        client.connect(hostname=host, port=port, username=username, key_filename=key_path)
-
-        # Wrap in login shell to load user profile (PATH, etc.)
-        if server.get("login_shell", True):
-            escaped = command.replace("'", "'\\''")
-            exec_cmd = f"bash -l -c '{escaped}'"
-        else:
-            exec_cmd = command
-
-        stdin, stdout, stderr = client.exec_command(exec_cmd, get_pty=True)
-        channel = stdout.channel
-
-        # Stream stdout line-by-line in real time
-        buf = ""
-        while not channel.exit_status_ready() or channel.recv_ready():
-            if channel.recv_ready():
+            # Flush any remaining data
+            while channel.recv_ready():
                 chunk = channel.recv(4096).decode(errors="replace")
                 buf += chunk
-                while "\n" in buf:
-                    line, buf = buf.split("\n", 1)
-                    update_ui("output", line + "\n")
-            else:
-                time.sleep(0.1)
+            if buf:
+                update_ui("output", buf + "\n")
 
-        # Flush any remaining data
-        while channel.recv_ready():
-            chunk = channel.recv(4096).decode(errors="replace")
-            buf += chunk
-        if buf:
-            update_ui("output", buf + "\n")
-
-        # Read any remaining stderr (when not using pty, stderr may have content)
-        error = stderr.read().decode(errors="replace")
-        if error:
-            update_ui("error", f"STDERR:\n{error}")
-
-        # Report exit code and elapsed time
-        exit_code = channel.recv_exit_status()
+            # Report exit code and elapsed time
+            exit_code = channel.recv_exit_status()
         if exit_code == 0:
-            update_ui("output", f"\n✓ Completed successfully ({elapsed()})\n")
+            update_ui("output", f"\n✓ Completed successfully ({format_elapsed(start_time)})\n")
         else:
-            update_ui("error", f"\n✗ FAILED — exit code {exit_code} ({elapsed()})\n")
-
-        client.close()
+            update_ui("error", f"\n✗ FAILED — exit code {exit_code} ({format_elapsed(start_time)})\n")
 
     except Exception as e:
-        update_ui("error", f"\nError: {str(e)} ({elapsed()})\n")
+        update_ui("error", f"\nError: {str(e)} ({format_elapsed(start_time)})\n")
 
 
 def run_sftp_download(app, result_text, server, remote, local):
     """Copy a remote file or folder (recursively) to a local path over SFTP."""
-    import stat
     name = server.get("name", server["host"])
     local = os.path.expanduser(local)
     start_time = datetime.now()
 
     def log(tag, text):
         app.after(0, lambda: (_insert_tagged(result_text, text, tag), result_text.see(tk.END)))
-
-    def elapsed():
-        mins, secs = divmod(int((datetime.now() - start_time).total_seconds()), 60)
-        return f"{mins}m{secs:02d}s" if mins else f"{secs}s"
 
     counts = {"files": 0, "bytes": 0}
 
@@ -451,18 +452,12 @@ def run_sftp_download(app, result_text, server, remote, local):
     timestamp = start_time.strftime("%Y-%m-%d %H:%M:%S")
     log("cmd", f"\n[{timestamp}] {name} download\n  {remote}\n  -> {local}\n")
     try:
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(hostname=server["host"], port=server.get("port", 22),
-                       username=server["username"], key_filename=server["key_path"])
-        sftp = client.open_sftp()
-        fetch(sftp, to_sftp_path(remote), local)
-        sftp.close()
-        client.close()
+        with ssh_connect(server) as client, client.open_sftp() as sftp:
+            fetch(sftp, to_sftp_path(remote), local)
         log("output", f"\n✓ Downloaded {counts['files']} files "
-                      f"({counts['bytes'] / 1024 / 1024:.1f} MB) to {local} ({elapsed()})\n")
+                      f"({counts['bytes'] / 1024 / 1024:.1f} MB) to {local} ({format_elapsed(start_time)})\n")
     except Exception as e:
-        log("error", f"\nError: {e} ({elapsed()})\n")
+        log("error", f"\nError: {e} ({format_elapsed(start_time)})\n")
 
 
 def _insert_tagged(widget, text, tag):
@@ -528,13 +523,9 @@ class ServerDialog(tk.Toplevel):
         cmd_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.cmd_listbox.config(yscrollcommand=cmd_scroll.set)
         self.cmd_listbox.bind("<Double-1>", lambda e: self._edit_cmd())
-        self._editing_idx = None
-
-        self.commands = []
-        if server and "commands" in server:
-            for cmd in server["commands"]:
-                self.commands.append(cmd)
-                self._insert_cmd_listbox_item(cmd)
+        # Copy so edits don't leak into the server when the dialog is cancelled.
+        self.commands = [dict(cmd) for cmd in server.get("commands", [])] if server else []
+        self._refresh_cmd_listbox()
 
         row += 1
 
@@ -547,8 +538,8 @@ class ServerDialog(tk.Toplevel):
         tk.Button(cmd_btn_frame, text="Color", command=self._recolor_cmd, width=8).pack(side=tk.LEFT, padx=2)
         tk.Button(cmd_btn_frame, text="Project", command=self._set_cmd_project, width=8).pack(side=tk.LEFT, padx=2)
         tk.Button(cmd_btn_frame, text="Remove", command=self._remove_cmd, width=8).pack(side=tk.LEFT, padx=2)
-        tk.Button(cmd_btn_frame, text="Move Up", command=self._move_cmd_up, width=8).pack(side=tk.LEFT, padx=2)
-        tk.Button(cmd_btn_frame, text="Move Down", command=self._move_cmd_down, width=8).pack(side=tk.LEFT, padx=2)
+        tk.Button(cmd_btn_frame, text="Move Up", command=lambda: self._move_cmd(-1), width=8).pack(side=tk.LEFT, padx=2)
+        tk.Button(cmd_btn_frame, text="Move Down", command=lambda: self._move_cmd(1), width=8).pack(side=tk.LEFT, padx=2)
         tk.Button(cmd_btn_frame, text="Open Folder", command=self._open_scripts_folder, width=10).pack(side=tk.LEFT, padx=2)
 
         row += 1
@@ -559,10 +550,21 @@ class ServerDialog(tk.Toplevel):
         tk.Button(btn_frame, text="Save", command=self._save, width=10).pack(side=tk.LEFT, padx=5)
         tk.Button(btn_frame, text="Cancel", command=self.destroy, width=10).pack(side=tk.LEFT, padx=5)
 
-    def _add_cmd(self):
-        server_name = self.entries["name"].get().strip()
-        if not server_name:
+    def _selected_idx(self):
+        sel = self.cmd_listbox.curselection()
+        return sel[0] if sel else None
+
+    def _server_name(self):
+        """The entered server name, or None (after telling the user) if empty."""
+        name = self.entries["name"].get().strip()
+        if not name:
             messagebox.showinfo("No Name", "Enter a server name first.", parent=self)
+            return None
+        return name
+
+    def _add_cmd(self):
+        server_name = self._server_name()
+        if not server_name:
             return
 
         label = simpledialog.askstring("Add Command", "Label:", parent=self)
@@ -597,40 +599,35 @@ class ServerDialog(tk.Toplevel):
         self._refresh_cmd_listbox()
 
     def _edit_cmd(self):
-        sel = self.cmd_listbox.curselection()
-        if not sel:
+        idx = self._selected_idx()
+        if idx is None:
             return
-        idx = sel[0]
         cmd = self.commands[idx]
-        server_name = self.entries["name"].get().strip()
+        server_name = self._server_name()
         if not server_name:
-            messagebox.showinfo("No Name", "Enter a server name first.", parent=self)
             return
         script_path = get_script_path(server_name, cmd.get("project"), cmd["script"])
         if not os.path.exists(script_path):
             os.makedirs(os.path.dirname(script_path), exist_ok=True)
             with open(script_path, "w") as f:
                 f.write("# Add your commands here\n")
-        import subprocess
         subprocess.Popen(["xdg-open", script_path])
 
     def _rename_cmd(self):
-        sel = self.cmd_listbox.curselection()
-        if not sel:
+        idx = self._selected_idx()
+        if idx is None:
             return
-        idx = sel[0]
         cmd = self.commands[idx]
-        new_label = tk.simpledialog.askstring("Rename Command", "New label:", initialvalue=cmd["label"], parent=self)
+        new_label = simpledialog.askstring("Rename Command", "New label:", initialvalue=cmd["label"], parent=self)
         if new_label and new_label.strip():
             cmd["label"] = new_label.strip()
             self._refresh_cmd_listbox()
             self.cmd_listbox.selection_set(idx)
 
     def _recolor_cmd(self):
-        sel = self.cmd_listbox.curselection()
-        if not sel:
+        idx = self._selected_idx()
+        if idx is None:
             return
-        idx = sel[0]
         cmd = self.commands[idx]
         current = cmd.get("color")
         color = colorchooser.askcolor(title="Button Color", initialcolor=current, parent=self)
@@ -640,10 +637,9 @@ class ServerDialog(tk.Toplevel):
             self.cmd_listbox.selection_set(idx)
 
     def _set_cmd_project(self):
-        sel = self.cmd_listbox.curselection()
-        if not sel:
+        idx = self._selected_idx()
+        if idx is None:
             return
-        idx = sel[0]
         cmd = self.commands[idx]
         current = cmd.get("project", "")
         project = simpledialog.askstring("Set Project", "Project:", initialvalue=current, parent=self)
@@ -658,53 +654,38 @@ class ServerDialog(tk.Toplevel):
         self.cmd_listbox.selection_set(idx)
 
     def _open_scripts_folder(self):
-        server_name = self.entries["name"].get().strip()
+        server_name = self._server_name()
         if not server_name:
-            messagebox.showinfo("No Name", "Enter a server name first.", parent=self)
             return
         scripts_dir = get_server_scripts_dir(server_name)
         os.makedirs(scripts_dir, exist_ok=True)
-        import subprocess
         subprocess.Popen(["xdg-open", scripts_dir])
 
     def _remove_cmd(self):
-        sel = self.cmd_listbox.curselection()
-        if not sel:
+        idx = self._selected_idx()
+        if idx is None:
             return
-        idx = sel[0]
         self.commands.pop(idx)
         self.cmd_listbox.delete(idx)
 
-    def _move_cmd_up(self):
-        sel = self.cmd_listbox.curselection()
-        if not sel or sel[0] == 0:
+    def _move_cmd(self, delta):
+        idx = self._selected_idx()
+        if idx is None or not 0 <= idx + delta < len(self.commands):
             return
-        idx = sel[0]
-        self.commands[idx - 1], self.commands[idx] = self.commands[idx], self.commands[idx - 1]
+        new = idx + delta
+        self.commands[idx], self.commands[new] = self.commands[new], self.commands[idx]
         self._refresh_cmd_listbox()
-        self.cmd_listbox.selection_set(idx - 1)
-
-    def _move_cmd_down(self):
-        sel = self.cmd_listbox.curselection()
-        if not sel or sel[0] >= len(self.commands) - 1:
-            return
-        idx = sel[0]
-        self.commands[idx], self.commands[idx + 1] = self.commands[idx + 1], self.commands[idx]
-        self._refresh_cmd_listbox()
-        self.cmd_listbox.selection_set(idx + 1)
-
-    def _insert_cmd_listbox_item(self, cmd):
-        project = cmd.get("project", "")
-        color = cmd.get("color", "")
-        prefix = f"[{project}] " if project else ""
-        self.cmd_listbox.insert(tk.END, f"{prefix}{cmd['label']}  |  {cmd['script']}  {color}")
-        if color:
-            self.cmd_listbox.itemconfig(self.cmd_listbox.size() - 1, fg=color)
+        self.cmd_listbox.selection_set(new)
 
     def _refresh_cmd_listbox(self):
         self.cmd_listbox.delete(0, tk.END)
         for cmd in self.commands:
-            self._insert_cmd_listbox_item(cmd)
+            project = cmd.get("project", "")
+            color = cmd.get("color", "")
+            prefix = f"[{project}] " if project else ""
+            self.cmd_listbox.insert(tk.END, f"{prefix}{cmd['label']}  |  {cmd['script']}  {color}")
+            if color:
+                self.cmd_listbox.itemconfig(tk.END, fg=color)
 
     def _save(self):
         data = {}
@@ -725,12 +706,9 @@ class ServerDialog(tk.Toplevel):
         data["login_shell"] = self.login_shell_var.get()
         data["commands"] = self.commands
 
-        # Ensure scripts directory exists for this server
-        if data["name"]:
-            os.makedirs(get_server_scripts_dir(data["name"]), exist_ok=True)
-
-        if self.callback:
-            self.callback(data)
+        # The callback returns False to keep the dialog open (e.g. name clash).
+        if self.callback and self.callback(data) is False:
+            return
         self.destroy()
 
 
@@ -759,19 +737,10 @@ class SSHManagerApp:
             except tk.TclError:
                 continue
 
-    def _create_output_widget(self, parent):
-        """Create a new ScrolledText output widget with standard tags."""
-        widget = scrolledtext.ScrolledText(parent, height=20, bg="#1e1e1e", fg="#d4d4d4",
-                                           insertbackground="white", font=("Consolas", 10))
-        widget.tag_config("output", foreground="#4ec9b0")
-        widget.tag_config("error", foreground="#f44747")
-        widget.tag_config("cmd", foreground="#569cd6")
-        return widget
-
     def _get_output_widget(self, server_name):
         """Get or create the output widget for a given server."""
         if server_name not in self.server_outputs:
-            widget = self._create_output_widget(self.out_frame)
+            widget = create_output_widget(self.out_frame)
             self.server_outputs[server_name] = widget
         return self.server_outputs[server_name]
 
@@ -790,7 +759,6 @@ class SSHManagerApp:
                 self.current_output.pack_forget()
             target_widget.pack(fill=tk.BOTH, expand=True)
             self.current_output = target_widget
-            self.result_text = target_widget
 
     def _build_ui(self):
         # --- Top bar: server selector + management buttons ---
@@ -834,7 +802,6 @@ class SSHManagerApp:
         # Per-server output widgets
         self.server_outputs = {}  # server_name -> ScrolledText
         self.current_output = None
-        self.result_text = None
 
     def _on_server_selected(self):
         self._refresh_buttons()
@@ -852,7 +819,6 @@ class SSHManagerApp:
         if s.get("port") and int(s["port"]) != 22:
             ssh_cmd += ["-p", str(s["port"])]
         ssh_cmd.append(f"{s['username']}@{s['host']}")
-        import subprocess, shutil
         if not shutil.which("x-terminal-emulator"):
             messagebox.showerror("Terminal Not Found", "x-terminal-emulator is not installed or not in PATH.")
             return
@@ -876,8 +842,7 @@ class SSHManagerApp:
             return
 
         # Group commands by project
-        from collections import OrderedDict
-        groups = OrderedDict()
+        groups = {}
         for cmd in commands:
             project = cmd.get("project", "")
             groups.setdefault(project, []).append(cmd)
@@ -915,7 +880,7 @@ class SSHManagerApp:
         win = tk.Toplevel(self.root)
         win.title(f"{server['name']} — {script_filename}")
         win.geometry("900x600")
-        output_widget = self._create_output_widget(win)
+        output_widget = create_output_widget(win)
         output_widget.pack(fill=tk.BOTH, expand=True)
         download = parse_download_directive(command)
         if download:
@@ -925,27 +890,36 @@ class SSHManagerApp:
         thread = threading.Thread(
             target=target,
             args=(self.root, output_widget, server, *args),
+            daemon=True,
         )
         thread.start()
 
     # --- Server management ---
-    def _refresh_server_combo(self):
+    def _refresh_server_combo(self, select=0):
         names = [s["name"] for s in self.servers]
         self.server_combo["values"] = names
         if names:
-            self.server_combo.current(0)
+            self.server_combo.current(min(select, len(names) - 1))
+        else:
+            self.server_combo.set("")
         self._refresh_buttons()
         self._switch_output()
 
     def _add_server(self):
         ServerDialog(self.root, title="Add Server", callback=self._on_server_added)
 
+    def _name_taken(self, name, skip_idx=None):
+        if any(i != skip_idx and s["name"] == name for i, s in enumerate(self.servers)):
+            messagebox.showerror("Name Taken", f"A server named '{name}' already exists.")
+            return True
+        return False
+
     def _on_server_added(self, data):
+        if self._name_taken(data["name"]):
+            return False
         self.servers.append(data)
-        save_servers(self.servers)
-        self._refresh_server_combo()
-        self.server_combo.current(len(self.servers) - 1)
-        self._refresh_buttons()
+        save_server(data)
+        self._refresh_server_combo(len(self.servers) - 1)
 
     def _edit_server(self):
         idx = self.server_combo.current()
@@ -959,21 +933,23 @@ class SSHManagerApp:
     def _on_server_edited(self, idx, data):
         old_name = self.servers[idx]["name"]
         new_name = data["name"]
-        # Migrate output widget if server was renamed
-        if old_name != new_name and old_name in self.server_outputs:
-            self.server_outputs[new_name] = self.server_outputs.pop(old_name)
-        # Rename scripts folder if server was renamed
         if old_name != new_name:
+            if self._name_taken(new_name, skip_idx=idx):
+                return False
+            # Rename scripts folder, then migrate the output widget
             old_dir = get_server_scripts_dir(old_name)
-            new_dir = get_server_scripts_dir(new_name)
             if os.path.isdir(old_dir):
-                os.rename(old_dir, new_dir)
+                try:
+                    os.rename(old_dir, get_server_scripts_dir(new_name))
+                except OSError as e:
+                    messagebox.showerror("Rename Failed",
+                                         f"Could not rename scripts folder:\n{e}")
+                    return False
+            if old_name in self.server_outputs:
+                self.server_outputs[new_name] = self.server_outputs.pop(old_name)
         self.servers[idx] = data
-        save_servers(self.servers)
-        self._refresh_server_combo()
-        self.server_combo.current(idx)
-        self._refresh_buttons()
-        self._switch_output()
+        save_server(data)
+        self._refresh_server_combo(idx)
 
     def _delete_server(self):
         idx = self.server_combo.current()
@@ -981,22 +957,22 @@ class SSHManagerApp:
             messagebox.showinfo("No Server", "Select a server to delete.")
             return
         name = self.servers[idx]["name"]
-        if messagebox.askyesno("Confirm Delete", f"Delete server '{name}'?"):
+        server_dir = get_server_scripts_dir(name)
+        msg = f"Delete server '{name}'?"
+        if os.path.isdir(server_dir):
+            msg += f"\n\nThis also deletes all of its scripts in:\n{server_dir}"
+        if messagebox.askyesno("Confirm Delete", msg, icon="warning"):
             # Clean up the output widget for this server
             if name in self.server_outputs:
                 widget = self.server_outputs.pop(name)
                 if self.current_output is widget:
                     widget.pack_forget()
                     self.current_output = None
-                    self.result_text = None
                 widget.destroy()
             self.servers.pop(idx)
-            # Config now lives in the server's folder, so remove it entirely.
-            server_dir = get_server_scripts_dir(name)
+            # Config lives in the server's folder, so remove it entirely.
             if os.path.isdir(server_dir):
-                import shutil
                 shutil.rmtree(server_dir)
-            save_servers(self.servers)
             self._refresh_server_combo()
 
     # --- Config export / import ---
@@ -1094,6 +1070,7 @@ class SSHManagerApp:
         thread = threading.Thread(
             target=run_ssh_command,
             args=(self.root, output_widget, server, command),
+            daemon=True,
         )
         thread.start()
 

@@ -1,10 +1,11 @@
 #!/bin/bash
+set -e
+
 source venv/bin/activate
 pip install -r requirements.txt
 pip install pyinstaller
 rm -rf build dist
 python -m PyInstaller --onedir --name ssh-GUI ssh_gui.py
-./dist/ssh-GUI/ssh-GUI
 
 rm -rf AppDir
 
@@ -40,4 +41,4 @@ cp icon.png AppDir/ssh-GUI.png
 # Set APPIMAGETOOL if appimagetool is not on PATH.
 "${APPIMAGETOOL:-appimagetool}" AppDir
 
-./ssh-GUI-x86_64.AppImage
+echo "Built ssh-GUI-x86_64.AppImage"
