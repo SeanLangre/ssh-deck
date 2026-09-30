@@ -9,7 +9,7 @@ scripts/pc-ext-pa/**
 backup.tar.gz
 build/**
 dist/**
-SSH-GUI.spec
+ssh-GUI.spec
 AppDir/**
 *.AppImage
 appimage-build.sh
