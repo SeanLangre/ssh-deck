@@ -4,6 +4,6 @@ servers.json
 scripts/
 build/**
 dist/**
-ssh-GUI.spec
+ssh-deck.spec
 AppDir/**
 *.AppImage

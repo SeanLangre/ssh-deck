@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
+import codecs
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, simpledialog, colorchooser, filedialog
 import threading
 import paramiko
 import json
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -25,9 +27,15 @@ def strip_ansi(text):
 if getattr(sys, "frozen", False):
     # Packaged build (PyInstaller/AppImage): the bundle is read-only, so keep
     # config in the user's config dir.
-    SCRIPT_DIR = os.path.join(
-        os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
-        "ssh-gui-manager")
+    _CONFIG_HOME = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    SCRIPT_DIR = os.path.join(_CONFIG_HOME, "ssh-deck")
+    # Carry over config from before the rename to SSH Deck.
+    _LEGACY_DIR = os.path.join(_CONFIG_HOME, "ssh-gui-manager")
+    if not os.path.exists(SCRIPT_DIR) and os.path.isdir(_LEGACY_DIR):
+        try:
+            os.rename(_LEGACY_DIR, SCRIPT_DIR)
+        except OSError:
+            SCRIPT_DIR = _LEGACY_DIR
 else:
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS_DIR = os.path.join(SCRIPT_DIR, "scripts")
@@ -76,18 +84,31 @@ COMMANDS_FILENAME = "commands.json"
 SERVER_META_FILENAME = "server.json"
 
 
+def _read_json(path, expected_type):
+    with open(path, "r") as f:
+        data = json.load(f)
+    if not isinstance(data, expected_type):
+        raise ValueError(f"expected a JSON {expected_type.__name__}")
+    return data
+
+
 def load_servers():
+    """Return (servers, errors); a broken file is skipped and reported, not fatal."""
     if not os.path.isdir(SCRIPTS_DIR):
-        return []
+        return [], []
 
     servers = []
+    errors = []
     for name in sorted(os.listdir(SCRIPTS_DIR)):
         server_dir = os.path.join(SCRIPTS_DIR, name)
         meta_path = os.path.join(server_dir, SERVER_META_FILENAME)
         if not os.path.isfile(meta_path):
             continue
-        with open(meta_path, "r") as f:
-            server = json.load(f)
+        try:
+            server = _read_json(meta_path, dict)
+        except (OSError, ValueError) as e:
+            errors.append(f"{os.path.relpath(meta_path, SCRIPTS_DIR)}: {e}")
+            continue
         server["name"] = name
 
         commands = []
@@ -95,13 +116,21 @@ def load_servers():
             cmds_path = os.path.join(server_dir, project, COMMANDS_FILENAME)
             if not os.path.isfile(cmds_path):
                 continue
-            with open(cmds_path, "r") as f:
-                for cmd in json.load(f):
-                    cmd["project"] = project
-                    commands.append(cmd)
+            try:
+                cmds = _read_json(cmds_path, list)
+            except (OSError, ValueError) as e:
+                errors.append(f"{os.path.relpath(cmds_path, SCRIPTS_DIR)}: {e}")
+                continue
+            for cmd in cmds:
+                if not isinstance(cmd, dict) or "label" not in cmd or "script" not in cmd:
+                    errors.append(f"{os.path.relpath(cmds_path, SCRIPTS_DIR)}: "
+                                  f"skipped malformed command {cmd!r}")
+                    continue
+                cmd["project"] = project
+                commands.append(cmd)
         server["commands"] = commands
         servers.append(server)
-    return servers
+    return servers, errors
 
 
 def save_server(server):
@@ -142,7 +171,9 @@ def save_servers(servers):
 # ---------- Config Export / Import ----------
 # The export is one JSON blob: every server (with its commands) plus the text
 # of every script under scripts/, so importing it rebuilds the same setup.
-EXPORT_FORMAT = "ssh-gui-config"
+EXPORT_FORMAT = "ssh-deck-config"
+# Exports made before the rename to SSH Deck are still accepted on import.
+LEGACY_EXPORT_FORMATS = ("ssh-gui-config",)
 EXPORT_VERSION = 1
 
 
@@ -184,8 +215,8 @@ def parse_config(text):
         data = json.loads(text)
     except json.JSONDecodeError as e:
         raise ValueError(f"Not valid JSON: {e}")
-    if not isinstance(data, dict) or data.get("format") != EXPORT_FORMAT:
-        raise ValueError("This is not an SSH GUI config export.")
+    if not isinstance(data, dict) or data.get("format") not in (EXPORT_FORMAT, *LEGACY_EXPORT_FORMATS):
+        raise ValueError("This is not an SSH Deck config export.")
     servers = data.get("servers", [])
     scripts = data.get("scripts", {})
     if not isinstance(servers, list) or not isinstance(scripts, dict):
@@ -248,7 +279,7 @@ def load_script_content(server_name, project, script_filename):
         content = f.read().strip()
     # When served from _shared, bind $PROJECT to this project's remote dir.
     if os.path.basename(os.path.dirname(path)) == SHARED_DIR_NAME:
-        content = f"PROJECT={project_remote_dir(project)}\n{content}"
+        content = f"PROJECT={shlex.quote(project_remote_dir(project))}\n{content}"
     return content
 
 
@@ -265,7 +296,7 @@ def parse_download_directive(content):
     lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
     # Skip the PROJECT= line injected for _shared scripts.
     if lines and lines[0].startswith("PROJECT="):
-        project = lines.pop(0).split("=", 1)[1]
+        project = "".join(shlex.split(lines.pop(0).split("=", 1)[1]))
     else:
         project = ""
     if not lines or lines[0] != DOWNLOAD_MARKER:
@@ -307,6 +338,47 @@ def create_output_widget(parent):
     return widget
 
 
+def save_widget_log(widget, parent, name):
+    content = widget.get("1.0", "end-1c")
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_") or "server"
+    timestamp_for_file = datetime.now().strftime("%Y%m%d-%H%M%S")
+    path = filedialog.asksaveasfilename(
+        parent=parent,
+        title="Save Log As",
+        defaultextension=".txt",
+        initialfile=f"{safe_name}-log-{timestamp_for_file}.txt",
+        filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+    )
+    if not path:
+        return
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+    except OSError as e:
+        messagebox.showerror("Save Failed", f"Could not save log:\n{e}", parent=parent)
+        return
+    messagebox.showinfo("Log Saved", f"Saved log to:\n{path}", parent=parent)
+
+
+def create_output_window(app, title, name):
+    """Open a Toplevel with a Save Log button and an output widget; returns the widget."""
+    win = tk.Toplevel(app)
+    win.title(title)
+    win.geometry("900x600")
+
+    controls = tk.Frame(win)
+    controls.pack(fill=tk.X, padx=6, pady=(6, 0))
+    widget = create_output_widget(win)
+    tk.Button(
+        controls,
+        text="Save Log...",
+        command=lambda: save_widget_log(widget, win, name),
+        width=10,
+    ).pack(side=tk.RIGHT)
+    widget.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+    return widget
+
+
 def format_elapsed(start_time):
     mins, secs = divmod(int((datetime.now() - start_time).total_seconds()), 60)
     return f"{mins}m{secs:02d}s" if mins else f"{secs}s"
@@ -328,60 +400,30 @@ def ssh_connect(server):
 
 
 # ---------- SSH Function ----------
-def run_ssh_command(app, result_text, server, command):
+def run_ssh_command(app, result_text, server, command, popout=True):
+    """Run command, streaming into result_text.
+
+    With popout=True (the shared per-server panel), output longer than
+    POPOUT_LINE_THRESHOLD moves to its own window. Quick commands already run
+    in a dedicated window and pass popout=False.
+    """
     name = server.get("name", server["host"])
     start_time = datetime.now()
     timestamp = start_time.strftime("%Y-%m-%d %H:%M:%S")
 
     # Mutable state for auto-popout
-    state = {"widget": result_text, "lines": 0, "popped": False, "win": None}
+    state = {"widget": result_text, "lines": 0, "popped": not popout}
     popout_ready = threading.Event()
-
-    def _save_widget_log(widget, parent):
-        content = widget.get("1.0", "end-1c")
-        safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_") or "server"
-        timestamp_for_file = datetime.now().strftime("%Y%m%d-%H%M%S")
-        path = filedialog.asksaveasfilename(
-            parent=parent,
-            title="Save Log As",
-            defaultextension=".txt",
-            initialfile=f"{safe_name}-log-{timestamp_for_file}.txt",
-            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
-        )
-        if not path:
-            return
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(content)
-        except OSError as e:
-            messagebox.showerror("Save Failed", f"Could not save log:\n{e}", parent=parent)
-            return
-        messagebox.showinfo("Log Saved", f"Saved log to:\n{path}", parent=parent)
 
     def _create_popout():
         """Create popout window on main thread."""
-        win = tk.Toplevel(app)
-        win.title(f"{name} — {command[:60]}")
-        win.geometry("900x600")
-
-        controls = tk.Frame(win)
-        controls.pack(fill=tk.X, padx=6, pady=(6, 0))
-        tk.Button(
-            controls,
-            text="Save Log...",
-            command=lambda: _save_widget_log(w, win),
-            width=10,
-        ).pack(side=tk.RIGHT)
-
-        w = create_output_widget(win)
-        w.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+        w = create_output_window(app, f"{name} — {command[:60]}", name)
         # Copy existing content from main widget
         content = result_text.get("1.0", tk.END)
         if content.strip():
             w.insert(tk.END, content, "output")
             w.see(tk.END)
         state["widget"] = w
-        state["win"] = win
         # Leave a note in the main output
         _insert_tagged(result_text, f"↗ Output moved to new window (>{POPOUT_LINE_THRESHOLD} lines)\n", "cmd")
         popout_ready.set()
@@ -415,12 +457,13 @@ def run_ssh_command(app, result_text, server, command):
             _, stdout, _ = client.exec_command(exec_cmd, get_pty=True)
             channel = stdout.channel
 
-            # Stream output line-by-line in real time
+            # Stream output line-by-line in real time. The incremental decoder
+            # keeps multi-byte characters intact when split across chunks.
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
             buf = ""
             while not channel.exit_status_ready() or channel.recv_ready():
                 if channel.recv_ready():
-                    chunk = channel.recv(4096).decode(errors="replace")
-                    buf += chunk
+                    buf += decoder.decode(channel.recv(4096))
                     while "\n" in buf:
                         line, buf = buf.split("\n", 1)
                         update_ui("output", line + "\n")
@@ -429,8 +472,8 @@ def run_ssh_command(app, result_text, server, command):
 
             # Flush any remaining data
             while channel.recv_ready():
-                chunk = channel.recv(4096).decode(errors="replace")
-                buf += chunk
+                buf += decoder.decode(channel.recv(4096))
+            buf += decoder.decode(b"", final=True)
             if buf:
                 update_ui("output", buf + "\n")
 
@@ -736,15 +779,20 @@ class ServerDialog(tk.Toplevel):
 class SSHManagerApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("SSH GUI Manager")
+        self.root.title("SSH Deck")
         self.root.geometry("950x500")
         self._app_icon = None
         self._set_window_icon()
 
-        self.servers = load_servers()
+        self.servers, load_errors = load_servers()
 
         self._build_ui()
         self._refresh_server_combo()
+        if load_errors:
+            self.root.after(0, lambda: messagebox.showwarning(
+                "Config Problems",
+                "Some config files could not be loaded and were skipped:\n\n"
+                + "\n".join(load_errors)))
 
     def _set_window_icon(self):
         for path in ICON_CANDIDATES:
@@ -899,16 +947,13 @@ class SSHManagerApp:
                                  f"Script file not found:\nscripts/{rel}")
             return
         # Open a separate window for each script run
-        win = tk.Toplevel(self.root)
-        win.title(f"{server['name']} — {script_filename}")
-        win.geometry("900x600")
-        output_widget = create_output_widget(win)
-        output_widget.pack(fill=tk.BOTH, expand=True)
+        output_widget = create_output_window(
+            self.root, f"{server['name']} — {script_filename}", server["name"])
         download = parse_download_directive(command)
         if download:
             target, args = run_sftp_download, (download["remote"], download["local"])
         else:
-            target, args = run_ssh_command, (command,)
+            target, args = run_ssh_command, (command, False)
         thread = threading.Thread(
             target=target,
             args=(self.root, output_widget, server, *args),
@@ -1099,6 +1144,6 @@ class SSHManagerApp:
 
 # ---------- Entry Point ----------
 if __name__ == "__main__":
-    root = tk.Tk(className="SshGuiManager")
+    root = tk.Tk(className="SshDeck")
     SSHManagerApp(root)
     root.mainloop()

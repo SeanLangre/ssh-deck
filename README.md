@@ -1,8 +1,8 @@
-# SSH GUI Manager
+# SSH Deck
 
 A lightweight desktop SSH management tool built with Python, Tkinter, and Paramiko. Manage multiple remote servers, run commands, and execute scripts — all from a single GUI.
 
-![Main window with quick command buttons grouped by project](image1.png)
+![Main window with quick command buttons grouped by project](images/image1.png)
 
 ## Features
 
@@ -29,12 +29,12 @@ python3 -m venv venv
 ./start.sh
 ```
 
-`start.sh` activates the venv, installs `requirements.txt` if Paramiko is missing, and launches `ssh_gui.py`.
+`start.sh` activates the venv, installs `requirements.txt` if Paramiko is missing, and launches `ssh_deck.py`.
 
 ## Project Structure
 
 ```
-├── ssh_gui.py            # Main application
+├── ssh_deck.py           # Main application
 ├── start.sh              # Launch script
 ├── requirements.txt      # Python dependencies
 ├── icon.png              # App icon (bundled into the AppImage)
@@ -52,7 +52,7 @@ python3 -m venv venv
             └── git-pull.sh
 ```
 
-When run from source, `scripts/` lives next to `ssh_gui.py`. The packaged AppImage keeps it in `~/.config/ssh-gui-manager/scripts/` instead.
+When run from source, `scripts/` lives next to `ssh_deck.py`. The packaged AppImage keeps it in `~/.config/ssh-deck/scripts/` instead (an existing `~/.config/ssh-gui-manager/` from before the rename is moved there on first launch).
 
 ## Server Configuration
 
@@ -67,7 +67,7 @@ Servers are managed through the GUI (Add/Edit/Delete buttons). Each server store
 | Key Path | Path to SSH private key |
 | Login Shell | Wrap commands in `bash -l` to load the user profile (uncheck for Windows servers) |
 
-![Edit Server dialog with connection settings and quick commands](image2.png)
+![Edit Server dialog with connection settings and quick commands](images/image2.png)
 
 ## Quick Commands
 
