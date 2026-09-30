@@ -1,15 +1,9 @@
 venv/**
 __pycache__/**
-history.json
 servers.json
-servers_backup.json
-scripts/mac-server/**
-scripts/mac-pa/**
-scripts/pc-ext-pa/**
-backup.tar.gz
+scripts/
 build/**
 dist/**
 ssh-GUI.spec
 AppDir/**
 *.AppImage
-appimage-build.sh

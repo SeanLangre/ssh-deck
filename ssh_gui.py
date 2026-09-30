@@ -204,7 +204,7 @@ SHARED_DIR_NAME = "_shared"
 
 
 def project_remote_dir(project):
-    """Remote project directory name (/path/to/Projects/<dir>) for a project label."""
+    """Value bound to $PROJECT in _shared scripts for a project label."""
     return (project or "").lower()
 
 
