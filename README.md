@@ -27,13 +27,15 @@ python3 -m venv venv
 ./start.sh
 ```
 
-`start.sh` activates the venv, installs `requirements.txt`, and launches `ssh_gui.py`.
+`start.sh` activates the venv, installs `requirements.txt` if Paramiko is missing, and launches `ssh_gui.py`.
 
 ## Project Structure
 
 ```
 ├── ssh_gui.py            # Main application
 ├── start.sh              # Launch script
+├── requirements.txt      # Python dependencies
+├── icon.png              # App icon (bundled into the AppImage)
 ├── appimage-build.sh     # Build a standalone AppImage
 └── scripts/              # Server config and scripts (not committed)
     ├── _shared/          # Scripts shared by every server
@@ -72,6 +74,8 @@ Each server can have custom command buttons configured through the Edit dialog:
 - **Color** — Button color for visual grouping
 - **Project** — Groups buttons under a heading and picks the script folder (`ALL` when empty)
 
+The Edit dialog can also rename, reorder (Move Up/Down), and remove commands, and **Open Folder** opens the server's scripts folder.
+
 Each quick command opens its own output window.
 
 ### Shared scripts
@@ -106,4 +110,4 @@ The export includes hostnames, usernames, and key paths (not the keys themselves
 APPIMAGETOOL=/path/to/appimagetool-x86_64.AppImage ./appimage-build.sh
 ```
 
-`APPIMAGETOOL` defaults to `appimagetool` on your `PATH`.
+Run it after creating `venv/` (see [Usage](#usage)); it installs PyInstaller into the venv and bundles `icon.png`. `APPIMAGETOOL` defaults to `appimagetool` on your `PATH`.
